@@ -1,4 +1,5 @@
 #include "junk.h"
+#include "imitate.h"
 #include "messages.h"
 #include "peer.h"
 
@@ -181,6 +182,50 @@ static int parse_rd_tag(char* val, struct list_head* head) {
     return 0;
 }
 
+static void imitate_quic_modifier(char *buf, int len, struct wg_peer *peer)
+{
+	u32 seed = imitate_junk_seed(atomic_read(&peer->jp_packet_counter));
+
+	imitate_fill_whole((u8 *)buf, len, seed, IMITATE_QUIC);
+}
+
+static void imitate_dns_modifier(char *buf, int len, struct wg_peer *peer)
+{
+	u32 seed = imitate_junk_seed(atomic_read(&peer->jp_packet_counter));
+
+	imitate_fill_whole((u8 *)buf, len, seed, IMITATE_DNS);
+}
+
+static void imitate_stun_modifier(char *buf, int len, struct wg_peer *peer)
+{
+	u32 seed = imitate_junk_seed(atomic_read(&peer->jp_packet_counter));
+
+	imitate_fill_whole((u8 *)buf, len, seed, IMITATE_STUN);
+}
+
+static void imitate_sip_modifier(char *buf, int len, struct wg_peer *peer)
+{
+	u32 seed = imitate_junk_seed(atomic_read(&peer->jp_packet_counter));
+
+	imitate_fill_whole((u8 *)buf, len, seed, IMITATE_SIP);
+}
+
+static int parse_imitate_tag(char *val, struct list_head *head, jp_modifier_func func)
+{
+	struct jp_tag *tag;
+	int len;
+
+	if (!val || 0 > kstrtoint(val, 10, &len))
+		return -EINVAL;
+	tag = kzalloc(sizeof(*tag), GFP_KERNEL);
+	if (!tag)
+		return -ENOMEM;
+	tag->pkt_size = len;
+	tag->func = func;
+	list_add(&tag->head, head);
+	return 0;
+}
+
 int jp_parse_tags(char* str, struct list_head* head) {
     int err = 0;
     char* key;
@@ -222,6 +267,26 @@ int jp_parse_tags(char* str, struct list_head* head) {
         }
         else if (!strcmp(key, "rd")) {
             err = parse_rd_tag(val, head);
+            if (err)
+                return err;
+        }
+        else if (!strcmp(key, "q")) {
+            err = parse_imitate_tag(val, head, imitate_quic_modifier);
+            if (err)
+                return err;
+        }
+        else if (!strcmp(key, "dns")) {
+            err = parse_imitate_tag(val, head, imitate_dns_modifier);
+            if (err)
+                return err;
+        }
+        else if (!strcmp(key, "stun")) {
+            err = parse_imitate_tag(val, head, imitate_stun_modifier);
+            if (err)
+                return err;
+        }
+        else if (!strcmp(key, "sip")) {
+            err = parse_imitate_tag(val, head, imitate_sip_modifier);
             if (err)
                 return err;
         }
