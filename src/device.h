@@ -7,6 +7,7 @@
 #define _WG_DEVICE_H
 
 #include "junk.h"
+#include "imitate.h"
 #include "noise.h"
 #include "allowedips.h"
 #include "peerlookup.h"
@@ -64,6 +65,8 @@ struct wg_device {
 	u16 jmin;
 	u16 jmax;
 	bool advanced_security;
+	enum imitate_proto imitate_proto;
+	atomic64_t imitate_junk_counter;
 };
 
 int wg_device_init(void);

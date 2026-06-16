@@ -58,7 +58,8 @@ static const struct nla_policy device_policy[WGDEVICE_A_MAX + 1] = {
 	[WGDEVICE_A_I2]		= { .type = NLA_NUL_STRING },
 	[WGDEVICE_A_I3]		= { .type = NLA_NUL_STRING },
 	[WGDEVICE_A_I4]		= { .type = NLA_NUL_STRING },
-	[WGDEVICE_A_I5]		= { .type = NLA_NUL_STRING }
+	[WGDEVICE_A_I5]		= { .type = NLA_NUL_STRING },
+	[WGDEVICE_A_IMITATE_PROTOCOL]	= { .type = NLA_NUL_STRING }
 };
 
 static const struct nla_policy peer_policy[WGPEER_A_MAX + 1] = {
@@ -461,6 +462,11 @@ static int wg_get_device_dump(struct sk_buff *skb, struct netlink_callback *cb)
 				nla_put_string(skb, WGDEVICE_A_I4, wg->ispecs[3].desc)) ||
 			(wg->ispecs[4].desc &&
 				nla_put_string(skb, WGDEVICE_A_I5, wg->ispecs[4].desc)))
+			goto out;
+
+		if (wg->imitate_proto != IMITATE_NONE &&
+		    nla_put_string(skb, WGDEVICE_A_IMITATE_PROTOCOL,
+				   imitate_proto_name(wg->imitate_proto)))
 			goto out;
 
 		down_read(&wg->static_identity.lock);
@@ -875,6 +881,17 @@ static int wg_set_device(struct sk_buff *skb, struct genl_info *info)
 		wg->advanced_security = true;
 		kfree(wg->ispecs[4].desc);
 		wg->ispecs[4].desc = nla_strdup(info->attrs[WGDEVICE_A_I5], GFP_KERNEL);
+	}
+
+	if (info->attrs[WGDEVICE_A_IMITATE_PROTOCOL]) {
+		wg->advanced_security = true;
+		str = nla_strdup(info->attrs[WGDEVICE_A_IMITATE_PROTOCOL], GFP_KERNEL);
+		if (!str) {
+			ret = -ENOMEM;
+			goto out;
+		}
+		wg->imitate_proto = imitate_proto_parse(str);
+		kfree(str);
 	}
 
 	if (flags & WGDEVICE_F_REPLACE_PEERS)
