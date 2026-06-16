@@ -26,7 +26,7 @@
 
 | File | Repo | Responsibility |
 |---|---|---|
-| `tools/imitate-vectors/src/gen_whole.go` (or equiv.) | go | Emit `whole` golden rows (Go-only oracle) |
+| `device/obf_imitate_whole_gen_test.go` | go | Test-driven generator: emit `whole` golden rows (Go-only oracle) |
 | `device/testdata/imitate_vectors.txt` | go | Prefix (Rust) + whole (Go) vectors |
 | `device/obf_imitate_golden_test.go` | go | Parse both row kinds; self-check whole rows |
 | `src/imitate.h` | kernel | Public API + `enum imitate_proto` |
@@ -52,7 +52,7 @@
 **Repo:** `amneziawg-go-proxy`. Closes the F1 gap — the existing vectors are prefix-only, so mechanisms B/C (and the DNS-whole / `imitate_junk_seed` paths) currently have no oracle. The whole path is a Go-only divergence (no Rust counterpart), so it is generated from Go and self-checked by the Go test.
 
 **Files:**
-- Create: `amneziawg-go-proxy/tools/imitate-vectors/gen_whole/main.go`
+- Create: `amneziawg-go-proxy/device/obf_imitate_whole_gen_test.go` (test-driven generator)
 - Modify: `amneziawg-go-proxy/tools/imitate-vectors/regen.sh`
 - Modify: `amneziawg-go-proxy/device/obf_imitate_golden_test.go`
 - Modify (regenerated): `amneziawg-go-proxy/device/testdata/imitate_vectors.txt`
@@ -92,11 +92,9 @@ In `device/obf_imitate_golden_test.go`, replace the fixed `len(fields) != 4` han
 		}
 ```
 
-- [ ] **Step 2: Write the whole-vector generator**
+- [ ] **Step 2: Write the whole-vector generator (test-driven)**
 
-Create `tools/imitate-vectors/gen_whole/main.go`. It lives in the `device` package's module; import the device package is not possible (internal), so generate by re-implementing the call through a tiny exported test helper is undesirable. Instead generate from a `go test`-driven dumper:
-
-Create `device/obf_imitate_whole_gen_test.go`:
+The whole-fill writers are unexported in package `device`, so the generator lives as a `go test` dumper in that package (no separate `main`). Create `device/obf_imitate_whole_gen_test.go`:
 
 ```go
 package device
@@ -140,7 +138,7 @@ func TestGenWholeVectors(t *testing.T) {
 }
 ```
 
-(The standalone `gen_whole/main.go` file from the Files list is not needed — delete that bullet mentally; the test-driven generator above is the implementation. Keep `regen.sh` as the single entry point per the next step.)
+`regen.sh` (next step) is the single entry point that runs both the Rust prefix generator and this Go whole-row dumper.
 
 - [ ] **Step 3: Extend `regen.sh` to append whole rows after the Rust prefix rows**
 
@@ -391,10 +389,12 @@ static int unhex(const char *s, u8 *out, int max)
 	return n;
 }
 
+/* Prefix row:  <proto> <pad> <payload_hex> <output_hex>      (4 fields)
+ * Whole row:   <proto> whole <len> <seed_hex> <output_hex>   (5 fields) */
 int main(int argc, char **argv)
 {
 	FILE *f;
-	char line[8192], proto[16], a[16], b[4096], c[8192];
+	char line[8192];
 	int pass = 0, fail = 0;
 
 	if (argc < 2) { fprintf(stderr, "usage: harness <vectors.txt>\n"); return 2; }
@@ -402,47 +402,38 @@ int main(int argc, char **argv)
 	if (!f) { perror("fopen"); return 2; }
 
 	while (fgets(line, sizeof(line), f)) {
-		u8 payload[4096], want[8192], got[8192];
-		int nf = sscanf(line, "%15s %15s %4095s %8191s", proto, a, b, c);
-		enum imitate_proto p = proto_of(proto);
-		int wn;
+		char proto[16], f2[16], lenstr[16], seedhex[16], outhex[8192], payhex[4096];
+		u8 want[8192], got[8192], payload[4096], seedbuf[4];
+		enum imitate_proto p;
 
-		if (nf < 4) continue;
-		if (!strcmp(a, "whole")) {
-			int len = atoi(b);
-			u8 seedbuf[4];
+		if (sscanf(line, "%15s %15s %15s %15s %8191s",
+			   proto, f2, lenstr, seedhex, outhex) == 5 &&
+		    !strcmp(f2, "whole")) {
+			int len = atoi(lenstr);
+			int wn = unhex(outhex, want, sizeof(want));
 			u32 seed;
 
-			if (unhex(b, NULL, 0) == -2) {} /* len is decimal in b */
-			len = atoi(b);
-			if (unhex(c, seedbuf, 4) < 0) { /* c is actually output for whole? */ }
-			/* whole row layout: proto whole <len> <seed_hex> <output_hex>
-			 * sscanf above captured b=<len>, c=<seed_hex>; read output as 5th. */
-			{
-				char outhex[8192];
-				if (sscanf(line, "%15s %15s %15s %15s %8191s", proto, a, b, c, outhex) != 5)
-					continue;
-				if (unhex(c, seedbuf, 4) != 4) continue;
-				seed = ((u32)seedbuf[0] << 24) | ((u32)seedbuf[1] << 16) |
-				       ((u32)seedbuf[2] << 8) | (u32)seedbuf[3];
-				wn = unhex(outhex, want, sizeof(want));
-				memset(got, 0, len);
-				imitate_fill_whole(got, len, seed, p);
-				if (wn == len && !memcmp(got, want, len)) pass++;
-				else { fail++; fprintf(stderr, "FAIL %s whole len=%d\n", proto, len); }
-			}
+			if (unhex(seedhex, seedbuf, 4) != 4)
+				continue;
+			seed = ((u32)seedbuf[0] << 24) | ((u32)seedbuf[1] << 16) |
+			       ((u32)seedbuf[2] << 8) | (u32)seedbuf[3];
+			memset(got, 0, len);
+			imitate_fill_whole(got, len, seed, p = proto_of(proto));
+			if (wn == len && !memcmp(got, want, len)) pass++;
+			else { fail++; fprintf(stderr, "FAIL %s whole len=%d\n", proto, len); }
 			continue;
 		}
-		{
-			int pad = atoi(a);
-			int pn = unhex(b, payload, sizeof(payload));
-			int total;
+		/* Prefix row: re-parse the 4-field layout. */
+		if (sscanf(line, "%15s %15s %4095s %8191s",
+			   proto, lenstr, payhex, outhex) == 4) {
+			int pad = atoi(lenstr);
+			int pn = unhex(payhex, payload, sizeof(payload));
+			int wn = unhex(outhex, want, sizeof(want));
+			int total = pad + pn;
 
-			wn = unhex(c, want, sizeof(want));
-			total = pad + pn;
 			memset(got, 0, total);
 			memcpy(got + pad, payload, pn);
-			imitate_fill_prefix(got, total, pad, p);
+			imitate_fill_prefix(got, total, pad, p = proto_of(proto));
 			if (wn == total && !memcmp(got, want, total)) pass++;
 			else { fail++; fprintf(stderr, "FAIL %s pad=%d\n", proto, pad); }
 		}
@@ -452,11 +443,6 @@ int main(int argc, char **argv)
 	return fail ? 1 : 0;
 }
 ```
-
-> Note: the whole-row parse above is deliberately written as a single clean
-> `sscanf(line, "%15s %15s %15s %15s %8191s", ...)` for 5 fields; the implementer
-> should simplify the block to that one call (the scaffolding comments show the
-> field layout). Keep prefix rows on the 4-field path.
 
 - [ ] **Step 5: Write `tests/imitate/Makefile`**
 
