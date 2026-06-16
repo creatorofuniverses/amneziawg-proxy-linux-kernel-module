@@ -30,7 +30,7 @@ test: insert
 # patched `wg` from the sibling amneziawg-tools-proxy fork; if the script reports
 # `wg` missing, build it first:  make -C ../../amneziawg-tools-proxy/src
 imitate-test: debug
-	sudo PATH="$$PATH:/usr/sbin:/sbin:/usr/bin:/bin:/usr/local/sbin:/usr/local/bin" ./tests/imitate-netns.sh
+	sudo IMITATE="$(IMITATE)" PATH="$$PATH:/usr/sbin:/sbin:/usr/bin:/bin:/usr/local/sbin:/usr/local/bin" ./tests/imitate-netns.sh
 
 # NOTE: test-qemu boots a self-built kernel running the *vanilla* tests/netns.sh
 # (qemu/Makefile hardcodes it) using upstream wireguard-tools — it exercises the

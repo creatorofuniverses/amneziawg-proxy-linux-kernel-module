@@ -111,16 +111,45 @@ PORT_B=51821
 
 PCAP="/tmp/imitate-interop-$$.pcap"
 TCPDUMP_PID=""
+RUN_OK=0   # set to 1 just before the PASS line; if still 0 at cleanup, dump diagnostics
+
+# ---------------------------------------------------------------------------
+# Diagnostics — dumped on failure BEFORE teardown (namespaces still alive).
+# Pinpoints WHERE it breaks: handshake (no "latest handshake" / rx=0 both sides)
+# vs transport (handshake present but one side's transfer rx stays 0), and the
+# kernel log shows the module's drop/handshake messages (debug build).
+# ---------------------------------------------------------------------------
+dump_diag() {
+	echo "================ DIAGNOSTICS (test did NOT pass) ================" >&2
+	echo "--- [A] $WG show $WG_A (handshake + transfer counters) ---" >&2
+	ip netns exec "$NS_A" "$WG" show "$WG_A" 2>&1 | sed 's/^/[A] /' >&2 || true
+	echo "--- [B] $WG show $WG_B ---" >&2
+	ip netns exec "$NS_B" "$WG" show "$WG_B" 2>&1 | sed 's/^/[B] /' >&2 || true
+	echo "--- [A] addr/route ---" >&2
+	ip -n "$NS_A" -br addr 2>&1 | sed 's/^/[A] /' >&2 || true
+	ip -n "$NS_A" route 2>&1 | sed 's/^/[A] /' >&2 || true
+	echo "--- [B] addr/route ---" >&2
+	ip -n "$NS_B" -br addr 2>&1 | sed 's/^/[B] /' >&2 || true
+	echo "--- kernel log (last 50 lines) ---" >&2
+	dmesg 2>/dev/null | tail -n 50 | sed 's/^/[dmesg] /' >&2 || true
+	echo "--- pcap saved at: $PCAP (open in Wireshark) ---" >&2
+	echo "================================================================" >&2
+}
 
 # ---------------------------------------------------------------------------
 # Cleanup trap  (runs on EXIT regardless of success or failure)
 # ---------------------------------------------------------------------------
 cleanup() {
 	set +e
-	# Stop tcpdump if it was started
+	# Stop tcpdump first so the pcap is flushed before we read/keep it
 	if [[ -n "$TCPDUMP_PID" ]]; then
 		kill "$TCPDUMP_PID" 2>/dev/null
 		wait "$TCPDUMP_PID" 2>/dev/null
+	fi
+	# If the test did not reach the PASS line, dump evidence while the
+	# namespaces and interfaces still exist (before we tear them down).
+	if [[ "$RUN_OK" -ne 1 ]]; then
+		dump_diag
 	fi
 	# Kill any processes still running inside the namespaces
 	local pids
@@ -225,17 +254,23 @@ ip netns exec "$NS_B" "$WG" set "$WG_B" \
 ip -n "$NS_B" link set "$WG_B" up
 
 # ---------------------------------------------------------------------------
-# Configure side A (patched sender: imitate_protocol quic + s4 + i1 decoy)
+# Configure side A (patched sender). IMITATE selects the shaping protocol;
+# IMITATE=none makes A == B (s4 framing, random padding, no decoy) — a control
+# run that isolates whether a failure is imitation-specific or framing/test.
 # ---------------------------------------------------------------------------
-echo "[*] Configuring side A (patched sender with imitate)"
+IMITATE_PROTO="${IMITATE:-quic}"
+A_IMITATE_ARGS=()
+if [[ "$IMITATE_PROTO" != "none" ]]; then
+	A_IMITATE_ARGS=(imitate_protocol "$IMITATE_PROTO" i1 "<q 600>")
+fi
+echo "[*] Configuring side A (sender; IMITATE=$IMITATE_PROTO)"
 ip -n "$NS_A" addr add "${TUNNEL_A}/${TUNNEL_PFX}" dev "$WG_A"
 
 ip netns exec "$NS_A" "$WG" set "$WG_A" \
 	private-key <(printf '%s' "$KEY_A") \
 	listen-port "$PORT_A" \
 	s4 600 \
-	imitate_protocol quic \
-	i1 "<q 600>" \
+	"${A_IMITATE_ARGS[@]}" \
 	peer "$PUB_B" \
 		allowed-ips "${TUNNEL_B}/32" \
 		endpoint "${UNDERLAY_B}:${PORT_B}"
@@ -286,4 +321,5 @@ if [[ -n "$TCPDUMP_PID" ]]; then
 	echo "    Open in Wireshark to confirm outgoing packets are classified as QUIC."
 fi
 
+RUN_OK=1
 echo "PASS: patched sender interops with vanilla peer"
