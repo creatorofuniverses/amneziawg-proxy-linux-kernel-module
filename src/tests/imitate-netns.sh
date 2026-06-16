@@ -241,14 +241,16 @@ ip netns exec "$NS_B" ping -c 3 -W 5 "$TUNNEL_A"
 # Assert 2: iperf3 transfer over the tunnel
 # ---------------------------------------------------------------------------
 echo "[*] Assert: iperf3 transfer (A -> B)"
-ip netns exec "$NS_B" iperf3 -s -1 -B "$TUNNEL_B" -D --logfile /tmp/iperf3-b-$$.log
+ip netns exec "$NS_B" iperf3 -s -1 -B "$TUNNEL_B" -D >/dev/null 2>&1
 # Wait for the server socket to appear
+ready=0
 for i in $(seq 1 20); do
 	if ip netns exec "$NS_B" ss -tlpH 'sport = 5201' | grep -q iperf3; then
-		break
+		ready=1; break
 	fi
 	sleep 0.2
 done
+[[ $ready -eq 1 ]] || { echo "ERROR: iperf3 server did not start in side B" >&2; exit 1; }
 
 ip netns exec "$NS_A" iperf3 -Z -t 3 -c "$TUNNEL_B"
 
