@@ -253,6 +253,140 @@ static void write_stun(u8 *buf, int padding, u32 seed)
 		buf[j] = 0x00;
 }
 
+static int decimal_digits(int value)
+{
+	int digits = 1;
+
+	while (value >= 10) {
+		value /= 10;
+		digits++;
+	}
+	return digits;
+}
+
+/* Returns the would-be length (full line); copies into p[*pos] iff it + the
+ * 2-byte closing blank line still fit. Mirrors Go's putLine. */
+static int sip_putline(u8 *p, int *pos, int length, const char *line, int n)
+{
+	if (*pos + n + 2 <= length) {
+		memcpy(p + *pos, line, n);
+		*pos += n;
+		return 1;
+	}
+	return 0;
+}
+
+/* SIP response header block (RFC 3261). Port of writeSIP. */
+static void write_sip(u8 *buf, int total, int padding, u32 seed)
+{
+	static const char *const status[3] = { "100 Trying", "180 Ringing", "200 OK" };
+	static const char *const hosts[3] = { "sip.example.com", "pbx.example.net", "voip.example.org" };
+	static const char *const methods[3] = { "INVITE", "OPTIONS", "REGISTER" };
+	u32 st = seed;
+	int length = padding;
+	int status_idx, host_i, method_i, pos = 0, k, all_mandatory;
+	u32 branch, from_tag, to_tag, call_id, cseq;
+	const char *host, *method;
+	char tmp[160];
+	int n, i;
+
+	if (padding <= 0)
+		return;
+
+	status_idx = (int)(next_lcg(&st) % 3);
+	host_i = (int)(next_lcg(&st) % 3);
+	method_i = (int)(next_lcg(&st) % 3);
+	branch = next_lcg(&st);
+	from_tag = next_lcg(&st);
+	to_tag = next_lcg(&st);
+	call_id = next_lcg(&st);
+	cseq = 1 + (st % 100000); /* reads state directly, no further next */
+	host = hosts[host_i];
+	method = methods[method_i];
+
+	/* Status line: try each rotation until one fits. */
+	{
+		int status_written = 0;
+
+		for (k = 0; k < 3; k++) {
+			const char *s = status[(status_idx + k) % 3];
+
+			n = IMITATE_SNPRINTF(tmp, sizeof(tmp), "SIP/2.0 %s\r\n", s);
+			if (sip_putline(buf, &pos, length, tmp, n)) {
+				status_written = 1;
+				break;
+			}
+		}
+		if (!status_written) {
+			static const char frag[] = "SIP/2.0 100 Trying\r\n";
+			int take = (int)sizeof(frag) - 1;
+
+			if (take > length)
+				take = length;
+			memcpy(buf, frag, take);
+			for (i = take; i < length; i++)
+				buf[i] = ' ';
+			if (length >= 2) {
+				buf[length - 2] = '\r';
+				buf[length - 1] = '\n';
+			}
+			return;
+		}
+	}
+
+	n = IMITATE_SNPRINTF(tmp, sizeof(tmp),
+		"Via: SIP/2.0/UDP %s:5060;branch=z9hG4bK%08x;rport\r\n", host, branch);
+	all_mandatory = sip_putline(buf, &pos, length, tmp, n);
+	if (all_mandatory) {
+		n = IMITATE_SNPRINTF(tmp, sizeof(tmp), "From: <sip:caller@%s>;tag=%08x\r\n", host, from_tag);
+		all_mandatory = sip_putline(buf, &pos, length, tmp, n);
+	}
+	if (all_mandatory) {
+		n = IMITATE_SNPRINTF(tmp, sizeof(tmp), "To: <sip:callee@%s>;tag=%08x\r\n", host, to_tag);
+		all_mandatory = sip_putline(buf, &pos, length, tmp, n);
+	}
+	if (all_mandatory) {
+		n = IMITATE_SNPRINTF(tmp, sizeof(tmp), "Call-ID: %08x@%s\r\n", call_id, host);
+		all_mandatory = sip_putline(buf, &pos, length, tmp, n);
+	}
+	if (all_mandatory) {
+		n = IMITATE_SNPRINTF(tmp, sizeof(tmp), "CSeq: %u %s\r\n", cseq, method);
+		all_mandatory = sip_putline(buf, &pos, length, tmp, n);
+	}
+
+	if (all_mandatory) {
+		int sws, digits, done = 0;
+
+		for (sws = 1; sws <= 2 && !done; sws++) {
+			for (digits = 1; digits <= decimal_digits(total); digits++) {
+				int header_end = pos + (int)sizeof("Content-Length:") - 1 +
+						 sws + digits + (int)sizeof("\r\n\r\n") - 1;
+				if (header_end > length)
+					break;
+				if (decimal_digits(total - header_end) == digits) {
+					int body = total - header_end;
+
+					if (sws == 1)
+						n = IMITATE_SNPRINTF(tmp, sizeof(tmp), "Content-Length: %d\r\n", body);
+					else
+						n = IMITATE_SNPRINTF(tmp, sizeof(tmp), "Content-Length:  %d\r\n", body);
+					sip_putline(buf, &pos, length, tmp, n);
+					done = 1;
+					break;
+				}
+			}
+		}
+	}
+
+	if (pos + 2 <= length) {
+		buf[pos] = '\r';
+		buf[pos + 1] = '\n';
+		pos += 2;
+	}
+	for (i = pos; i < length; i++)
+		buf[i] = ' ';
+}
+
 void imitate_fill_prefix(u8 *buf, int total_len, int padding, enum imitate_proto p)
 {
 	u32 seed;
@@ -271,6 +405,7 @@ void imitate_fill_prefix(u8 *buf, int total_len, int padding, enum imitate_proto
 		break;
 	}
 	case IMITATE_STUN: write_stun(buf, padding, seed); break;
+	case IMITATE_SIP: write_sip(buf, total_len, padding, seed); break;
 	default: break;
 	}
 }
@@ -288,6 +423,7 @@ void imitate_fill_whole(u8 *buf, int len, u32 seed, enum imitate_proto p)
 		break;
 	}
 	case IMITATE_STUN: write_stun(buf, len, seed); break;
+	case IMITATE_SIP: write_sip(buf, len, len, seed); break;
 	default: break;
 	}
 }
