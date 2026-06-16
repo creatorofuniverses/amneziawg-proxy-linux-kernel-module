@@ -70,6 +70,24 @@ if [[ ! -x "$WG" ]]; then
 	exit 1
 fi
 
+# Refuse to run if a host AmneziaWG interface is live. This test unloads and
+# reloads the amneziawg module at the HOST level; doing so while a real tunnel
+# (e.g. an active VPN) exists would tear it down. The test namespaces do not
+# exist yet at this point, so any amneziawg interface seen here is a host one.
+HOST_AWG="$(ip -br link show type amneziawg 2>/dev/null | awk '{print $1}' | paste -sd' ' -)"
+if [[ -n "${HOST_AWG// /}" ]]; then
+	echo "ERROR: live host AmneziaWG interface(s) present: $HOST_AWG" >&2
+	echo "       This test unloads/reloads the amneziawg module and would disrupt them." >&2
+	echo "       Bring them down first (e.g. stop the VPN), or run in a VM/QEMU (make test-qemu)." >&2
+	exit 1
+fi
+
+# Remember whether the system module was loaded so cleanup can restore it.
+SYS_MODULE_WAS_LOADED=0
+if lsmod | awk '{print $1}' | grep -qx amneziawg; then
+	SYS_MODULE_WAS_LOADED=1
+fi
+
 # ---------------------------------------------------------------------------
 # Namespace / interface names ($$-scoped to avoid collisions)
 # ---------------------------------------------------------------------------
@@ -117,10 +135,12 @@ cleanup() {
 	# Delete namespaces (this also removes the veth endpoints)
 	ip netns del "$NS_A" 2>/dev/null || true
 	ip netns del "$NS_B" 2>/dev/null || true
-	# Unload the dev module.
-	# NOTE: the system module (if any) is NOT restored automatically.
-	#       If you need it back, run: modprobe amneziawg
+	# Unload the dev module, then restore the system-installed module if it was
+	# loaded before this test ran (so the host is left as we found it).
 	rmmod amneziawg 2>/dev/null || true
+	if [[ "${SYS_MODULE_WAS_LOADED:-0}" -eq 1 ]]; then
+		modprobe amneziawg 2>/dev/null || true
+	fi
 }
 trap cleanup EXIT
 
