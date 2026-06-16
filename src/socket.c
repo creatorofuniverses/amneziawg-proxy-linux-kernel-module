@@ -4,6 +4,7 @@
  */
 
 #include "device.h"
+#include "imitate.h"
 #include "peer.h"
 #include "socket.h"
 #include "queueing.h"
@@ -198,8 +199,8 @@ int wg_socket_send_buffer_to_peer(struct wg_peer *peer, void *buffer,
 	skb_reserve(skb, SKB_HEADER_LEN);
 	skb_set_inner_network_header(skb, 0);
 	junk = skb_put(skb, junk_size);
-	get_random_bytes(junk, junk_size);
 	skb_put_data(skb, buffer, len);
+	wg_fill_padding(peer->device, junk, junk_size + len, junk_size);
 	return wg_socket_send_skb_to_peer(peer, skb, ds);
 }
 
@@ -224,8 +225,8 @@ int wg_socket_send_buffer_as_reply_to_skb(struct wg_device *wg,
 	skb_reserve(skb, SKB_HEADER_LEN);
 	skb_set_inner_network_header(skb, 0);
 	junk = skb_put(skb, junk_size);
-	get_random_bytes(junk, junk_size);
 	skb_put_data(skb, buffer, len);
+	wg_fill_padding(wg, junk, junk_size + len, junk_size);
 
 	if (endpoint.addr.sa_family == AF_INET)
 		ret = send4(wg, skb, &endpoint, 0, NULL);

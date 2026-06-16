@@ -3,6 +3,7 @@
  * Copyright (C) 2015-2019 Jason A. Donenfeld <Jason@zx2c4.com>. All Rights Reserved.
  */
 
+#include "imitate.h"
 #include "junk.h"
 #include "magic_header.h"
 #include "queueing.h"
@@ -67,7 +68,7 @@ static void wg_packet_send_handshake_initiation(struct wg_peer *peer)
 		while (junk_packet_count-- > 0) {
 			junk_packet_size = (u16) get_random_u32_inclusive(wg->jmin, wg->jmax);
 
-			get_random_bytes(buffer, junk_packet_size);
+			wg_fill_junk(wg, buffer, junk_packet_size);
 			get_random_bytes(&ds, 1);
 			wg_socket_send_buffer_to_peer(peer, buffer, junk_packet_size, ds, 0);
 		}
@@ -207,7 +208,7 @@ static unsigned int calculate_skb_padding(struct sk_buff *skb)
 	return padded_size - last_unit;
 }
 
-static bool encrypt_packet(u32 message_type, size_t junk_size, struct sk_buff *skb, struct noise_keypair *keypair
+static bool encrypt_packet(struct wg_device *wg, u32 message_type, size_t junk_size, struct sk_buff *skb, struct noise_keypair *keypair
 			   COMPAT_MAYBE_SIMD_CONTEXT(simd_context_t *simd_context))
 {
 	unsigned int padding_len, plaintext_len, trailer_len;
@@ -257,7 +258,8 @@ static bool encrypt_packet(u32 message_type, size_t junk_size, struct sk_buff *s
 	header->counter = cpu_to_le64(PACKET_CB(skb)->nonce);
 	pskb_put(skb, trailer, trailer_len);
 
-	get_random_bytes(skb_push(skb, junk_size), junk_size);
+	skb_push(skb, junk_size);
+	wg_fill_padding(wg, skb->data, skb->len, junk_size);
 
 	/* Now we can encrypt the scattergather segments */
 	sg_init_table(sg, num_frags);
@@ -354,6 +356,7 @@ void wg_packet_encrypt_worker(struct work_struct *work)
 			wg = PACKET_PEER(first)->device;
 
 			if (likely(encrypt_packet(
+						  wg,
 						  mh_genheader(&wg->headers[MSGIDX_TRANSPORT]),
 						  wg->junk_size[MSGIDX_TRANSPORT],
 						  skb,

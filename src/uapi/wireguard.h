@@ -203,6 +203,7 @@ enum wgdevice_attribute {
 	WGDEVICE_A_I3,
 	WGDEVICE_A_I4,
 	WGDEVICE_A_I5,
+	WGDEVICE_A_IMITATE_PROTOCOL, /* keep value == tools src/uapi/linux/linux/wireguard.h */
 	__WGDEVICE_A_LAST
 };
 #define WGDEVICE_A_MAX (__WGDEVICE_A_LAST - 1)
