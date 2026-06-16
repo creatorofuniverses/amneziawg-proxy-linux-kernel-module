@@ -188,7 +188,9 @@ ip link add "$WG_B" type amneziawg
 ip link set "$WG_B" netns "$NS_B"
 
 # ---------------------------------------------------------------------------
-# Configure side B (vanilla AWG peer — no imitate settings)
+# Configure side B (vanilla peer — SAME AWG framing (s4) as A so the wire
+# framing matches, but NO imitate_protocol: it fills its padding randomly
+# and must still accept A's QUIC-shaped padding (the cosmetic-interop proof).
 # ---------------------------------------------------------------------------
 echo "[*] Configuring side B (vanilla peer)"
 ip -n "$NS_B" addr add "${TUNNEL_B}/${TUNNEL_PFX}" dev "$WG_B"
@@ -196,6 +198,7 @@ ip -n "$NS_B" addr add "${TUNNEL_B}/${TUNNEL_PFX}" dev "$WG_B"
 ip netns exec "$NS_B" "$WG" set "$WG_B" \
 	private-key <(printf '%s' "$KEY_B") \
 	listen-port "$PORT_B" \
+	s4 600 \
 	peer "$PUB_A" \
 		allowed-ips "${TUNNEL_A}/32"
 
