@@ -195,6 +195,64 @@ static void write_quic_short(u8 *buf, int padding, u32 seed)
 	}
 }
 
+/* STUN Binding Success Response (RFC 5389). Port of writeSTUN — the LCG draw
+ * order (txn x3, then port, addr, then SOFTWARE chars) must not change. */
+static void write_stun(u8 *buf, int padding, u32 seed)
+{
+	u32 state = seed;
+	const u32 cookie = 0x2112A442u;
+	u8 txn[12];
+	u8 header[20];
+	int body = 0, written = 0, remaining, i, j, copy_len;
+
+	if (padding <= 0)
+		return;
+	for (i = 0; i < 12; i += 4)
+		put_be32(txn + i, next_lcg(&state));
+
+	if (padding > 20)
+		body = (padding - 20) & ~0x3;
+
+	if (body - written >= 12) {
+		u16 port = (u16)(next_lcg(&state) >> 16);
+		u32 addr = next_lcg(&state);
+		u16 xport = port ^ (u16)(cookie >> 16);
+		u32 xaddr = addr ^ cookie;
+		int off = 20 + written;
+
+		put_be16(buf + off, 0x0020);
+		put_be16(buf + off + 2, 8);
+		buf[off + 4] = 0x00;
+		buf[off + 5] = 0x01;
+		put_be16(buf + off + 6, xport);
+		put_be32(buf + off + 8, xaddr);
+		written += 12;
+	}
+
+	remaining = body - written;
+	if (remaining >= 4) {
+		int vlen = remaining - 4;
+		int off = 20 + written;
+
+		if (vlen > 124)
+			vlen = 124;
+		put_be16(buf + off, 0x8022);
+		put_be16(buf + off + 2, (u16)vlen);
+		for (j = 0; j < vlen; j++)
+			buf[off + 4 + j] = 0x20 + (u8)(next_lcg(&state) % 0x5F);
+		written += 4 + vlen;
+	}
+
+	put_be16(header, 0x0101);
+	put_be16(header + 2, (u16)written);
+	put_be32(header + 4, cookie);
+	memcpy(header + 8, txn, 12);
+	copy_len = padding < 20 ? padding : 20;
+	memcpy(buf, header, copy_len);
+	for (j = 20 + written; j < padding; j++)
+		buf[j] = 0x00;
+}
+
 void imitate_fill_prefix(u8 *buf, int total_len, int padding, enum imitate_proto p)
 {
 	u32 seed;
@@ -212,6 +270,7 @@ void imitate_fill_prefix(u8 *buf, int total_len, int padding, enum imitate_proto
 		write_dns_msg(buf, total_len, padding, txid);
 		break;
 	}
+	case IMITATE_STUN: write_stun(buf, padding, seed); break;
 	default: break;
 	}
 }
@@ -228,6 +287,7 @@ void imitate_fill_whole(u8 *buf, int len, u32 seed, enum imitate_proto p)
 		write_dns_msg(buf, len, len, txid);
 		break;
 	}
+	case IMITATE_STUN: write_stun(buf, len, seed); break;
 	default: break;
 	}
 }
