@@ -184,28 +184,28 @@ static int parse_rd_tag(char* val, struct list_head* head) {
 
 static void imitate_quic_modifier(char *buf, int len, struct wg_peer *peer)
 {
-	u32 seed = imitate_junk_seed(atomic_read(&peer->jp_packet_counter));
+	u32 seed = imitate_junk_seed((u32)atomic_read(&peer->jp_packet_counter));
 
 	imitate_fill_whole((u8 *)buf, len, seed, IMITATE_QUIC);
 }
 
 static void imitate_dns_modifier(char *buf, int len, struct wg_peer *peer)
 {
-	u32 seed = imitate_junk_seed(atomic_read(&peer->jp_packet_counter));
+	u32 seed = imitate_junk_seed((u32)atomic_read(&peer->jp_packet_counter));
 
 	imitate_fill_whole((u8 *)buf, len, seed, IMITATE_DNS);
 }
 
 static void imitate_stun_modifier(char *buf, int len, struct wg_peer *peer)
 {
-	u32 seed = imitate_junk_seed(atomic_read(&peer->jp_packet_counter));
+	u32 seed = imitate_junk_seed((u32)atomic_read(&peer->jp_packet_counter));
 
 	imitate_fill_whole((u8 *)buf, len, seed, IMITATE_STUN);
 }
 
 static void imitate_sip_modifier(char *buf, int len, struct wg_peer *peer)
 {
-	u32 seed = imitate_junk_seed(atomic_read(&peer->jp_packet_counter));
+	u32 seed = imitate_junk_seed((u32)atomic_read(&peer->jp_packet_counter));
 
 	imitate_fill_whole((u8 *)buf, len, seed, IMITATE_SIP);
 }

@@ -16,7 +16,7 @@ static u32 lcg_step(u32 s)
 	return s * 1103515245u + 12345u;
 }
 
-static u32 __attribute__((unused)) next_lcg(u32 *state)
+static u32 next_lcg(u32 *state)
 {
 	u32 v = *state;
 
@@ -24,13 +24,13 @@ static u32 __attribute__((unused)) next_lcg(u32 *state)
 	return v;
 }
 
-static void __attribute__((unused)) put_be16(u8 *p, u16 v)
+static void put_be16(u8 *p, u16 v)
 {
 	p[0] = (u8)(v >> 8);
 	p[1] = (u8)v;
 }
 
-static void __attribute__((unused)) put_be32(u8 *p, u32 v)
+static void put_be32(u8 *p, u32 v)
 {
 	p[0] = (u8)(v >> 24);
 	p[1] = (u8)(v >> 16);
