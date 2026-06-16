@@ -35,4 +35,10 @@ u32 imitate_junk_seed(u64 counter);
 enum imitate_proto imitate_proto_parse(const char *s);
 const char *imitate_proto_name(enum imitate_proto p);
 
+#ifdef __KERNEL__
+struct wg_device;
+void wg_fill_padding(struct wg_device *wg, u8 *buf, int total_len, int padding);
+void wg_fill_junk(struct wg_device *wg, u8 *buf, int len);
+#endif
+
 #endif /* _AWG_IMITATE_H */

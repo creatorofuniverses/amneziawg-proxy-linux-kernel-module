@@ -3,6 +3,7 @@
  * Copyright (C) 2015-2019 Jason A. Donenfeld <Jason@zx2c4.com>. All Rights Reserved.
  */
 
+#include "imitate.h"
 #include "junk.h"
 #include "magic_header.h"
 #include "queueing.h"
@@ -207,7 +208,7 @@ static unsigned int calculate_skb_padding(struct sk_buff *skb)
 	return padded_size - last_unit;
 }
 
-static bool encrypt_packet(u32 message_type, size_t junk_size, struct sk_buff *skb, struct noise_keypair *keypair
+static bool encrypt_packet(struct wg_device *wg, u32 message_type, size_t junk_size, struct sk_buff *skb, struct noise_keypair *keypair
 			   COMPAT_MAYBE_SIMD_CONTEXT(simd_context_t *simd_context))
 {
 	unsigned int padding_len, plaintext_len, trailer_len;
@@ -257,7 +258,8 @@ static bool encrypt_packet(u32 message_type, size_t junk_size, struct sk_buff *s
 	header->counter = cpu_to_le64(PACKET_CB(skb)->nonce);
 	pskb_put(skb, trailer, trailer_len);
 
-	get_random_bytes(skb_push(skb, junk_size), junk_size);
+	skb_push(skb, junk_size);
+	wg_fill_padding(wg, skb->data, skb->len, junk_size);
 
 	/* Now we can encrypt the scattergather segments */
 	sg_init_table(sg, num_frags);
@@ -354,6 +356,7 @@ void wg_packet_encrypt_worker(struct work_struct *work)
 			wg = PACKET_PEER(first)->device;
 
 			if (likely(encrypt_packet(
+						  wg,
 						  mh_genheader(&wg->headers[MSGIDX_TRANSPORT]),
 						  wg->junk_size[MSGIDX_TRANSPORT],
 						  skb,

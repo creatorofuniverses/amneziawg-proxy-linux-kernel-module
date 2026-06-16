@@ -427,3 +427,27 @@ void imitate_fill_whole(u8 *buf, int len, u32 seed, enum imitate_proto p)
 	default: break;
 	}
 }
+
+#ifdef __KERNEL__
+#include <linux/random.h>
+#include "device.h"
+
+void wg_fill_padding(struct wg_device *wg, u8 *buf, int total_len, int padding)
+{
+	if (wg->imitate_proto != IMITATE_NONE)
+		imitate_fill_prefix(buf, total_len, padding, wg->imitate_proto);
+	else
+		get_random_bytes(buf, padding);
+}
+
+void wg_fill_junk(struct wg_device *wg, u8 *buf, int len)
+{
+	if (wg->imitate_proto != IMITATE_NONE) {
+		u32 seed = imitate_junk_seed(atomic64_inc_return(&wg->imitate_junk_counter));
+
+		imitate_fill_whole(buf, len, seed, wg->imitate_proto);
+	} else {
+		get_random_bytes(buf, len);
+	}
+}
+#endif /* __KERNEL__ */
