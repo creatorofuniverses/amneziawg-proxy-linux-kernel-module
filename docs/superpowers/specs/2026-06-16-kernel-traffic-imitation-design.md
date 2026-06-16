@@ -13,8 +13,13 @@ the C kernel module, **Tiers 1–3 only**:
 
 - **Tier 1 / Mechanism A** — shape the `S1`–`S4` padding prefix of real packets.
 - **Tier 2 / Mechanism B** — shape standalone junk packets (`Jc`/`Jmin`/`Jmax`).
-- **Tier 3 / Mechanism C** — shape I-packets (`I1`–`I5`) + a device-global
-  protocol selector.
+- **Tier 3 / Mechanism C** — shape I-packets (`I1`–`I5`) via per-tag protocol
+  names.
+
+A device-global `imitate_protocol` selector governs **A and B only**. Mechanism
+C is **per-tag**: an `I1=<q 600>` decoy is QUIC-shaped regardless of (and even
+when) `imitate_protocol=none`, matching the Go model where the tag names the
+proto. (F4)
 
 Tier 4 (`qinit` — fake QUIC Initial + SNI) is **deferred to a separate Phase 2
 spec** because it requires the kernel crypto API (AES-128-GCM, HKDF-SHA256,
@@ -103,9 +108,9 @@ Sites (replace `get_random_bytes(...)`):
 
 | Site | Packet | Note |
 |---|---|---|
-| `socket.c:201` | handshake init / response prefix | see §7 risk |
-| `socket.c:227` | cookie / response prefix | see §7 risk |
-| `send.c:260` | transport data prefix (`skb_push`) | softirq / `GFP_ATOMIC` |
+| `socket.c:201` | handshake init / response prefix | **reorder required** — see §7 F2 |
+| `socket.c:227` | cookie / response prefix | **reorder required** — see §7 F2 |
+| `send.c:260` | transport data prefix (`skb_push`) | softirq / `GFP_ATOMIC`; pre-encryption seed — see §7 F3 |
 
 New helper (in `imitate.c` or `device.c`):
 
@@ -117,6 +122,22 @@ void wg_fill_padding(struct wg_device *wg, u8 *buf, int total_len, int padding) 
         get_random_bytes(buf, padding);   /* unchanged behavior */
 }
 ```
+
+**Mandatory ordering at the two `socket.c` sites (F2):** these sites currently
+fill the junk *before* the message exists
+(`skb_put`(junk) → `get_random_bytes` → `skb_put_data`(buffer)). Because the
+prefix writer seeds from `buf[padding:]`, the fill **must** be moved to *after*
+the message is placed — the regions are contiguous from the `junk` pointer:
+
+```c
+junk = skb_put(skb, junk_size);
+skb_put_data(skb, buffer, len);                                   /* place message first */
+wg_fill_padding(wg, junk, junk_size + len, junk_size);            /* then seed + fill prefix */
+```
+
+Seeding uninitialized skb memory is **not** an accepted fallback (F2): in kernel
+context it is a KMSAN use-of-uninitialized-value and a theoretical info-leak,
+even though the output is cosmetic.
 
 ### 4.2 Mechanism B — junk packets
 
@@ -153,7 +174,9 @@ static int parse_q_tag(char *val, struct list_head *head) { /* like parse_r_tag,
 Register the four new keys in `jp_parse_tags` alongside `b/c/t/r/rc/rd`.
 
 These ride the **existing** `I1`–`I5` netlink string attributes — **no new attr
-and no tools change** for mechanism C.
+and no tools change** for mechanism C. The proto is baked into the tag/modifier,
+so mechanism C is **independent of `wg->imitate_proto`** (which controls A/B
+only). (F4)
 
 ## 5. Config plumbing (netlink + tools)
 
@@ -180,8 +203,9 @@ userspace-daemon path (commit `fa52332`: `containers.h`, `config.c`,
     dev->imitate_protocol)`.
   - `parse_device` (get path): handle `WGDEVICE_A_IMITATE_PROTOCOL` →
     `dev->imitate_protocol` + set the flag.
-- `src/uapi/wireguard.h` (tools copy): add the matching
-  `WGDEVICE_A_IMITATE_PROTOCOL` enum so both sides agree on the attribute number.
+- `src/uapi/linux/linux/wireguard.h` (tools copy — note the doubled `linux/`
+  path) (F5): add the matching `WGDEVICE_A_IMITATE_PROTOCOL` enum so both sides
+  agree on the attribute number.
 
 > **Attribute-number contract:** the enum value of `WGDEVICE_A_IMITATE_PROTOCOL`
 > must be identical in the kernel and tools `wireguard.h` copies.
@@ -194,11 +218,24 @@ userspace-daemon path (commit `fa52332`: `containers.h`, `config.c`,
 - Compile `src/imitate.c` standalone in userspace behind a thin shim header that
   provides `u8/u32/u64`, `htons`/`htonl`, and a stubbed `get_random_bytes`
   (unused by the deterministic writers).
-- Parse `amneziawg-go-proxy/device/testdata/imitate_vectors.txt` (format:
-  `<proto> <pad> <payload_hex> <output_hex>`); for each line call
-  `imitate_fill_prefix` and assert byte-exact equality.
+- Parse `amneziawg-go-proxy/device/testdata/imitate_vectors.txt` and assert
+  byte-exact equality. **Two row kinds** (F1):
+  - prefix rows `<proto> <pad> <payload_hex> <output_hex>` → call
+    `imitate_fill_prefix` (gates Mechanism A).
+  - whole rows `<proto> whole <len> <seed_hex> <output_hex>` → call
+    `imitate_fill_whole` (gates Mechanisms B and C).
 - Add `make -C tests/imitate test` (or a top-level `make imitate-test`).
 - A failing vector is a hard error — this is the byte-exactness gate.
+
+> **F1 — the existing vector file is prefix-only**, so it gates Mechanism A
+> alone. `imitate_fill_whole` is a *distinct* path: DNS-whole seeds TXID from the
+> injected `seed` (not the payload), and B/C derive that seed via
+> `imitate_junk_seed` (counter → FNV-1a → u32) — neither is exercised by any
+> prefix row. Before/at phasing step 1, extend the Go fork's
+> `tools/imitate-vectors` generator (`regen.sh`) to also emit `whole` rows across
+> all four protocols (incl. several `imitate_junk_seed` counter values) and
+> regenerate `imitate_vectors.txt`. This closes the oracle for the two tiers this
+> work actually adds.
 
 ### 6.2 netns interop anchor
 
@@ -223,26 +260,40 @@ userspace-daemon path (commit `fa52332`: `containers.h`, `config.c`,
 
 ## 7. Known risks
 
-1. **Payload presence at fill time (mechanism A).** In `socket.c` handshake
-   paths the junk prefix may be filled *before* the real message bytes are
-   copied in; Go fills *after* (`copy(buf[padding:], packet)` then
-   `fillPadding`). The unit harness stays byte-exact regardless (it tests the
-   function with payload present). For runtime, each `socket.c` site must either
-   be reordered to fill after the message is placed, or accept buffer-state
-   seeding (still protocol-valid + vanilla-interop, only decorrelation differs).
-   The implementation plan resolves this per-site and documents the choice.
-2. **Hot-path discipline.** `send.c:260` runs per-packet in softirq. The writers
+1. **F2 — Payload presence at fill time (mechanism A), `socket.c`.** Both
+   `socket.c` sites fill the junk *before* the message exists
+   (`skb_put`(junk) → `get_random_bytes` → `skb_put_data`(buffer)). Since the
+   prefix writer seeds from `buf[padding:]`, the fill **must be reordered** to
+   run after the message is placed (see the §4.1 pattern). Seeding uninitialized
+   skb memory is **not** an accepted alternative — it is a KMSAN
+   use-of-uninitialized-value report and a theoretical info-leak in kernel
+   context, even though the output is cosmetic. The `send.c:260` transport site
+   already has the payload present after `skb_push`, so only the two `socket.c`
+   sites need the reorder.
+2. **F3 — `send.c:260` seeds from plaintext, pre-encryption (Low).** The junk is
+   `skb_push`ed in front of the `message_data` header *before* encryption, so
+   `buf[padding:]` is the plaintext header + plaintext. Seeding off the
+   low-entropy header is fine for cosmetics; runtime decorrelation here rides on
+   the per-packet `counter` field in that header. Go-vs-kernel *runtime* bytes
+   will differ at this site — only the harness is byte-exact (as already stated).
+   No code change, just an implementer note.
+3. **Hot-path discipline.** `send.c:260` runs per-packet in softirq. The writers
    must stay allocation-free and FP-free (they are). Verify with
    `make module-debug` (KASAN) under load.
-3. **`junk.c` memory safety.** This file had recent use-after-free / corruption
+4. **`junk.c` memory safety.** This file had recent use-after-free / corruption
    fixes; new tags must follow the exact alloc/lifetime pattern of the existing
    parsers and be exercised under KASAN.
-4. **Attribute-number drift** between kernel and tools `wireguard.h` — covered by
+5. **Attribute-number drift** between kernel and tools `wireguard.h` — covered by
    the §5.2 contract; add a comment in both files.
-5. **Endianness.** Writers use explicit `htons`/`htonl` for protocol fields and
+6. **Endianness.** Writers use explicit `htons`/`htonl` for protocol fields and
    raw LCG bytes for filler; golden vectors were generated little-endian-host —
    the harness must run on the same byte order assumptions the writers encode
    (writers are explicit, so this is safe; note it in the harness).
+7. **F5 — `receive.c` transport size-match uses `>=`, not `==`.** The three
+   handshake cases match exactly (`==`); the transport case matches with
+   `skb->len >= junk_size + MESSAGE_TRANSPORT_SIZE`. The cosmetic/interop claim
+   still holds — padding content is never inspected — but an implementer should
+   not be surprised by the asymmetry.
 
 ## 8. Deliverables / file map
 
@@ -255,18 +306,22 @@ Kernel (`amneziawg-proxy-linux-kernel-module`):
 - `src/junk.c` — four new tags + modifiers.
 - `src/netlink.c`, `src/uapi/wireguard.h` — `WGDEVICE_A_IMITATE_PROTOCOL`.
 - `tests/imitate/` — golden harness; netns additions.
+- `amneziawg-go-proxy/tools/imitate-vectors` — extend generator with `whole`
+  rows; regenerate `device/testdata/imitate_vectors.txt` (F1).
 
 tools (`amneziawg-tools-proxy`):
 
 - `src/ipc-linux.h` — send/parse `imitate_protocol` over netlink.
-- `src/uapi/wireguard.h` — matching attribute enum.
+- `src/uapi/linux/linux/wireguard.h` — matching attribute enum (F5).
 
 ## 9. Implementation phasing
 
-1. `imitate.c/.h` + userspace golden harness → green against vectors. (No kernel
-   behavior change yet.)
-2. Mechanism A (3 sites) + `WGDEVICE_A_IMITATE_PROTOCOL` + tools wiring → netns
-   interop with `imitate_protocol=quic`.
+1. **Extend the vector generator with `whole` rows + regenerate (F1)**, then
+   `imitate.c/.h` + userspace golden harness → green against *both* prefix and
+   whole vectors. (No kernel behavior change yet.)
+2. Mechanism A (3 sites) — **with the mandatory `socket.c` reorder (F2)** — +
+   `WGDEVICE_A_IMITATE_PROTOCOL` + tools wiring → netns interop with
+   `imitate_protocol=quic`.
 3. Mechanism B (`send.c:70`).
 4. Mechanism C (`junk.c` tags) → netns with `I1=<q 600>`.
 5. Realism + fuzz pass; KASAN under load.
