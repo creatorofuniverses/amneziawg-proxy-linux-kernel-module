@@ -88,7 +88,11 @@ Contents (all mirroring the Go oracle byte-for-byte in structure):
   (RFC 8446 §7.1) with the `"tls13 "` prefix and zero-length context.
 - `derive_initial_keys(dcid, key[16], iv[12], hp[16])` — RFC 9001 §5.2 client
   Initial key derivation: `HKDF-Extract(salt=quic_v1_initial_salt, ikm=dcid)`
-  → `"client in"` → `"quic key"`/`"quic iv"`/`"quic hp"`.
+  → `"client in"` → `"quic key"`/`"quic iv"`/`"quic hp"`. **Argument order is
+  load-bearing:** Extract takes the salt as the HMAC *key* and the DCID as the IKM
+  (`initial_secret = HMAC-SHA256(key=salt, msg=dcid)`). Hand-rolled HKDF commonly
+  swaps these; the RFC 9001 A.1 key-schedule test (§8 Layer 2) only passes if the
+  order is correct.
 - `build_client_hello(...)` — full TLS 1.3 ClientHello: `server_name`,
   `supported_versions` (0x0304), `supported_groups` (x25519), `key_share`
   (x25519, 32 random bytes), `signature_algorithms`, ALPN `h3`,
@@ -167,16 +171,35 @@ struct jp_modifier { ...; void *ctx; };   /* new field */
 ```
 
 - The `qinit` parser `kstrdup`s the SNI into `tag->ctx`.
-- `jp_spec_setup` transfers `ctx` ownership tag→mod alongside the existing `buf`
-  transfer (the reverse-iteration loop in `src/junk.c`).
-- `jp_spec_free` frees each `mod->ctx` before freeing the `mods` array.
-- All existing modifiers gain the unused `void *ctx` parameter and ignore it.
+- **`ctx` uses copy semantics — the tag and the mod own independent
+  `kstrdup`-ed copies.** This is mandatory, not a stylistic choice: there is **no
+  "buf transfer" to ride alongside**. For modifier tags (`tag->func` set,
+  `tag->pkt == NULL`, which is what `qinit` is), `jp_spec_setup` moves *nothing* —
+  it `memcpy`s into `spec->pkt` only `if (tag->pkt)` (`src/junk.c:370-372`), and
+  `mod->buf` points *into* `spec->pkt`, not into the tag. So `ctx` has no
+  pre-existing analog and must be handled on its own terms.
+- In the reverse-iteration loop, `mod->ctx = kstrdup(tag->ctx, GFP_KERNEL)` (a NULL
+  return is `-ENOMEM` via the existing `error:` path). The tag keeps its own
+  `tag->ctx`.
+- **Why copy, not pointer-move:** `jp_spec_setup`'s `error:` label is the *common*
+  exit — it runs `list_for_each_entry_safe(... jp_tag_free(tag) ... kfree(tag))`
+  over **every** tag on the **success** path too (`src/junk.c:387-391`). A bare
+  pointer-move (`mod->ctx = tag->ctx`) without NULLing `tag->ctx` would let
+  `jp_tag_free` free a pointer the mod still holds → **double-free / UAF**. Copy
+  semantics sidesteps this entirely; a move alternative would *require* an explicit
+  `tag->ctx = NULL` after the move, which is more error-prone, so the spec mandates
+  copy.
+- `jp_tag_free` is extended to `kfree(tag->ctx)` (covers every error/success
+  teardown of the tag list, including partial builds in `jp_parse_tags`).
+- `jp_spec_free` frees each `mod->ctx` before `kfree(spec->mods)`.
+- All **nine** existing modifiers (§9) gain the unused `void *ctx` parameter and
+  ignore it.
 
-**Lifetime note (CLAUDE.md UAF-sensitive path):** `ctx` is a heap string owned by
-exactly one place at a time (tag, then mod). Every error path in `jp_spec_setup`
-and `jp_parse_tags` that frees a partially built tag list must also free
-`tag->ctx`; `jp_tag_free` is extended to do so. This is the single highest-risk
-change in the spec and is called out for KASAN coverage in §8.
+**Lifetime note (CLAUDE.md UAF-sensitive path):** with copy semantics, `ctx` is a
+heap string owned independently by the tag and by each mod; teardown is symmetric
+(`jp_tag_free` frees the tag's copy, `jp_spec_free` frees the mods' copies) and no
+pointer is ever shared across the tag/mod boundary. This is the single
+highest-risk change in the spec and is called out for KASAN coverage in §8.
 
 ### 5.4 Tag wiring in `src/junk.c`
 
@@ -232,11 +255,33 @@ that runs in-kernel, and as `src/selftest/` units in the debug build.
 | HKDF-SHA256 | RFC 5869 | Appendix A.1–A.3 |
 | AES-128-GCM | NIST CAVP `gcmEncrypt` | fixed key/IV/AAD/PT → CT+tag |
 
-**Layer 2 — whole-pipeline byte-exact test against RFC 9001 Appendix A.** Pin
-`qinit_rand_fn` to the RFC's fixed DCID/SCID/PN/randoms and assert `qinit_build`
-output equals the RFC's documented protected client Initial **byte-for-byte**.
-This exercises HKDF → key derivation → AES-GCM seal → AES-ECB header protection →
-varint/length framing end-to-end against a standard with a known answer.
+**Layer 2 — pipeline correctness, in two parts** (a whole-datagram byte-match
+against RFC 9001 Appendix A is *not* achievable and is deliberately **not** the
+target: the RFC's worked example carries a *different* ClientHello, so a different
+plaintext necessarily yields a different 1200-byte datagram. The Go oracle makes
+the same split — see `obf_imitate_quic_test.go`):
+
+1. **Key-schedule byte-exactness vs RFC 9001 Appendix A.1.** Feed the RFC's fixed
+   DCID (`0x8394c8f03e515708`) to `derive_initial_keys` and assert
+   `key`/`iv`/`hp` equal the RFC's documented values **byte-for-byte**. This is
+   the legitimate "RFC worked example" anchor and transitively proves
+   SHA-256 → HMAC → HKDF-Extract/Expand end-to-end. (Mirrors the oracle's
+   `TestDeriveInitialKeysRFC9001`.)
+2. **Whole datagram by self-decrypt round-trip.** Pin `qinit_rand_fn`, call
+   `qinit_build`, then independently derive the keys, AEAD-`Open` the payload,
+   strip header protection, and parse the ClientHello — asserting SNI / ALPN /
+   `initial_source_connection_id` recover correctly. This exercises the full
+   seal + header-protection + framing pipeline against a known answer without
+   requiring a byte-identical datagram. (Mirrors the oracle's
+   `TestQInitRoundTrip`; this is the in-tree half of the "cross-impl decrypt" in
+   the §2 table.)
+
+   *Optional drift anchor:* pin the randomness once and commit `qinit_build`'s
+   output as a frozen golden vector — this catches *regression/drift*, not
+   correctness. (A true byte-exact cross-impl match against the Go oracle would
+   require first refactoring the oracle to accept injected randomness — today its
+   `rand.Read` calls are hardcoded — so it is out of scope unless that refactor is
+   undertaken.)
 
 **Layer 3 — cross-implementation / cross-language interop:** generate the Initial
 in C, then decrypt + parse it with implementations we did not write, asserting the
@@ -271,9 +316,10 @@ oracle).
 - `src/junk.h` — `jp_modifier_func` gains `void *ctx`; `jp_tag`/`jp_modifier`
   gain a `ctx` field.
 - `src/junk.c` — `qinit` keyword + `parse_qinit_tag` + `qinit_modifier`; `ctx`
-  ownership transfer in `jp_spec_setup`; `ctx` free in `jp_spec_free` and
+  copy (`kstrdup`) in `jp_spec_setup`; `ctx` free in `jp_spec_free` and
   `jp_tag_free`; qinit-exclusivity validation; the unused `ctx` param added to
-  the five existing modifiers.
+  **all nine** existing modifiers (`pkt_counter`, `unix_time`, `random_byte`,
+  `random_char`, `random_digit`, `imitate_{quic,dns,stun,sip}`).
 - `src/selftest/` — primitive KATs + RFC 9001 App. A test.
 - `tests/imitate/` — extend the userspace harness with the KATs, the byte-exact
   test, and the interop/property tests; netns case for `i1=<qinit ...>`.
@@ -283,7 +329,8 @@ oracle).
 1. **Vendored primitives** (`aes.c`, `sha256.c`) + Layer-1 KATs green in the
    userspace harness. (No kernel behavior change.)
 2. **`qinit.c` builder** (HKDF, key derivation, ClientHello, GCM seal, header
-   protection) + Layer-2 RFC 9001 Appendix A byte-exact test green.
+   protection) + Layer-2 green: RFC 9001 A.1 key-schedule byte-exactness **and**
+   the self-decrypt round-trip (SNI/ALPN/ISCID recover).
 3. **Modifier-model `ctx` extension** (§5.3) + `qinit` tag parser/modifier in
    `junk.c` + exclusivity validation. KASAN/ASan on the `ctx` lifetime.
 4. **Interop + property tests** (Layer 3: Go decrypt, aioquic/tshark; Layer 4).
@@ -293,9 +340,10 @@ oracle).
 
 ## 11. Open risks
 
-- **GHASH/GCM correctness** is the fiddliest vendored code; fully covered by
-  Layer-1 NIST GCM vectors and the Layer-2 RFC 9001 byte-exact test before any
-  kernel wiring.
+- **GHASH/GCM correctness** is the fiddliest vendored code; covered before any
+  kernel wiring by the Layer-1 NIST `gcmEncrypt` vectors and the Layer-2
+  self-decrypt round-trip (build → AEAD-`Open` → parse). The RFC 9001 A.1
+  key-schedule match anchors HKDF/HMAC/SHA-256, not GCM.
 - **`ctx` lifetime** in the UAF-sensitive junk path (§5.3) — covered by KASAN/
   ASan in phase 3 and exercised by repeated tag set/reset.
 - **`prandom_*` debug-build gap** (pre-existing, from Tiers 1–3) may block a true
