@@ -238,11 +238,14 @@ PUB_B="$(printf '%s' "$KEY_B" | "$WG" pubkey)"
 # Create amneziawg interfaces
 # ---------------------------------------------------------------------------
 echo "[*] Creating AWG interfaces"
-# Create in default ns, then move into each namespace
-ip link add "$WG_A" type amneziawg
-ip link set "$WG_A" netns "$NS_A"
-ip link add "$WG_B" type amneziawg
-ip link set "$WG_B" netns "$NS_B"
+# Create each interface DIRECTLY inside its namespace. A WireGuard/AmneziaWG
+# interface's UDP socket lives in the namespace where the interface is CREATED
+# and does NOT move with `ip link set ... netns`. If we created them in the
+# default ns and moved them, both sockets would stay in the default ns and could
+# not reach the veth underlay (10.99.88.x) that exists only inside NS_A/NS_B —
+# the handshake init would go nowhere and the peer would receive nothing.
+ip -n "$NS_A" link add "$WG_A" type amneziawg
+ip -n "$NS_B" link add "$WG_B" type amneziawg
 
 # ---------------------------------------------------------------------------
 # Configure side B (vanilla peer — SAME AWG framing (s4) as A so the wire
