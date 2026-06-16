@@ -86,14 +86,46 @@ const char *imitate_proto_name(enum imitate_proto p)
 	}
 }
 
-/* Protocol writers are added in later tasks. */
+/* QUIC 1-RTT short header (RFC 9000 §17.3.1) + LCG body. Port of
+ * obf_imitate.go:writeQUICShort — keep the draw order. */
+static void write_quic_short(u8 *buf, int padding, u32 seed)
+{
+	u32 state = seed;
+	u8 spin, key_phase, pn_len_bits;
+	int i;
+
+	if (padding <= 0)
+		return;
+	spin = (u8)(state >> 8) & 0x01; state = lcg_step(state);
+	key_phase = (u8)(state >> 8) & 0x01; state = lcg_step(state);
+	pn_len_bits = (u8)state & 0x03; state = lcg_step(state);
+
+	buf[0] = 0x40 | (spin << 5) | (key_phase << 2) | pn_len_bits;
+	for (i = 1; i < padding; i++) {
+		buf[i] = (u8)(state >> 16); /* middle byte, NOT the low byte */
+		state = lcg_step(state);
+	}
+}
 
 void imitate_fill_prefix(u8 *buf, int total_len, int padding, enum imitate_proto p)
 {
-	(void)buf; (void)total_len; (void)padding; (void)p;
+	u32 seed;
+
+	if (padding == 0 || padding >= total_len)
+		return;
+	seed = imitate_fnv1a_seed(buf + padding, total_len - padding);
+	switch (p) {
+	case IMITATE_QUIC: write_quic_short(buf, padding, seed); break;
+	default: break;
+	}
 }
 
 void imitate_fill_whole(u8 *buf, int len, u32 seed, enum imitate_proto p)
 {
-	(void)buf; (void)len; (void)seed; (void)p;
+	if (len <= 0)
+		return;
+	switch (p) {
+	case IMITATE_QUIC: write_quic_short(buf, len, seed); break;
+	default: break;
+	}
 }
