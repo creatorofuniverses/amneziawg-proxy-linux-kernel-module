@@ -29,7 +29,12 @@ test: insert
 # amneziawg tunnel exists, and restores the system module on exit. It uses the
 # patched `wg` from the sibling amneziawg-tools-proxy fork; if the script reports
 # `wg` missing, build it first:  make -C ../../amneziawg-tools-proxy/src
-imitate-test: debug
+#
+# Depends on `module` (non-debug), not `debug`: module-debug compiles the
+# selftests, which use prandom_bytes/prandom_u32_max — removed in kernels ~6.x+
+# (a pre-existing selftest/compat gap). The script enables dynamic debug at
+# runtime instead, so the kernel drop/handshake messages still appear.
+imitate-test: module
 	sudo IMITATE="$(IMITATE)" PATH="$$PATH:/usr/sbin:/sbin:/usr/bin:/bin:/usr/local/sbin:/usr/local/bin" ./tests/imitate-netns.sh
 
 # NOTE: test-qemu boots a self-built kernel running the *vanilla* tests/netns.sh

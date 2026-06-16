@@ -180,6 +180,14 @@ echo "[*] Loading dev module: $KO"
 rmmod amneziawg 2>/dev/null || true
 insmod "$KO"
 
+# Turn on the module's pr_debug/net_dbg messages at runtime (e.g. the receiver's
+# "Unknown message ... packet dropped"). Works on a non-debug build too, as long
+# as the kernel has CONFIG_DYNAMIC_DEBUG. Best-effort.
+if [[ -w /sys/kernel/debug/dynamic_debug/control ]]; then
+	echo 'module amneziawg +p' > /sys/kernel/debug/dynamic_debug/control 2>/dev/null || true
+	echo "[*] Enabled dynamic debug for module amneziawg"
+fi
+
 # ---------------------------------------------------------------------------
 # Network namespaces
 # ---------------------------------------------------------------------------
