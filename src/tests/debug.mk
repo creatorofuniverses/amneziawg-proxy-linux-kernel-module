@@ -16,13 +16,27 @@ MAYBE_DEBUG :=
 endif
 
 insert: debug
-	-modinfo -F depends wireguard.ko | tr ',' '\n' | sudo xargs -n 1 modprobe
-	-sudo rmmod wireguard
-	-sudo insmod wireguard.ko
+	-modinfo -F depends amneziawg.ko | tr ',' '\n' | sudo xargs -n 1 modprobe
+	-sudo rmmod amneziawg
+	-sudo insmod amneziawg.ko
 
 test: insert
 	sudo PATH="$$PATH:/usr/sbin:/sbin:/usr/bin:/bin:/usr/local/sbin:/usr/local/bin" ./tests/netns.sh
 
+# Client-side traffic-imitation interop anchor (host network namespaces).
+# Unlike `test`, this does NOT use `insert`: imitate-netns.sh loads the freshly
+# built amneziawg.ko itself, guarded so it refuses to run while a live host
+# amneziawg tunnel exists, and restores the system module on exit. It uses the
+# patched `wg` from the sibling amneziawg-tools-proxy fork; if the script reports
+# `wg` missing, build it first:  make -C ../../amneziawg-tools-proxy/src
+imitate-test: debug
+	sudo PATH="$$PATH:/usr/sbin:/sbin:/usr/bin:/bin:/usr/local/sbin:/usr/local/bin" ./tests/imitate-netns.sh
+
+# NOTE: test-qemu boots a self-built kernel running the *vanilla* tests/netns.sh
+# (qemu/Makefile hardcodes it) using upstream wireguard-tools — it exercises the
+# module's core WireGuard compatibility, NOT the imitation feature. Running the
+# imitation test under QEMU would require bundling the amneziawg-tools-proxy fork
+# into the image; until then, use `imitate-test` on a host (or in a VM).
 test-qemu:
 	$(MAKE) -C tests/qemu
 

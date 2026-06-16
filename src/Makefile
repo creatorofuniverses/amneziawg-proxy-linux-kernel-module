@@ -57,4 +57,4 @@ cloc:
 
 -include tests/debug.mk
 
-.PHONY: all module module-debug apply-patches module-install install dkms-install clean cloc check style
+.PHONY: all module module-debug apply-patches module-install install dkms-install clean cloc check style insert test imitate-test test-qemu
