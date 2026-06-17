@@ -22,6 +22,13 @@ void qinit_hmac_sha256(const u8 *key, u32 klen, const u8 *msg, u32 mlen, u8 out[
 void qinit_hkdf_extract(const u8 *salt, u32 slen, const u8 *ikm, u32 ilen, u8 prk[32]);
 void qinit_hkdf_expand_label(const u8 *secret, const char *label, u8 *out, u16 len);
 
+/* AES-128-GCM AEAD seal, 96-bit nonce, 16-byte tag appended after ciphertext.
+ * out must hold ptlen + 16 bytes.
+ */
+void qinit_aes128_gcm_seal(const u8 key[16], const u8 nonce[12],
+			   const u8 *aad, u32 aadlen,
+			   const u8 *pt, u32 ptlen, u8 *out);
+
 #ifdef __KERNEL__
 /* get_random_bytes wrapper used by the kernel modifier (Task 11). */
 void qinit_rand_getrandom(void *rctx, u8 *out, int n);
