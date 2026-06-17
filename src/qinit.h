@@ -40,4 +40,11 @@ void qinit_aes128_gcm_seal(const u8 key[16], const u8 nonce[12],
 void qinit_rand_getrandom(void *rctx, u8 *out, int n);
 #endif
 
+#ifndef __KERNEL__
+/* Test-only shim: exposes qinit_put_varint for the varint KAT.
+ * Returns the number of bytes written to out.
+ */
+int qinit_test_put_varint(u8 *out, u64 v);
+#endif
+
 #endif /* _AWG_QINIT_H */

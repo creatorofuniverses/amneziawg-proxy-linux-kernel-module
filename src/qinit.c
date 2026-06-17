@@ -249,3 +249,249 @@ void qinit_hkdf_expand_label(const u8 *secret, const char *label, u8 *out, u16 l
 	}
 	memcpy(out, t, len);
 }
+
+/* QUIC variable-length integer (RFC 9000 §16).
+ * Writes 1, 2, 4, or 8 bytes to p; returns pointer past the end.
+ */
+static u8 *qinit_put_varint(u8 *p, u64 v)
+{
+	if (v <= 63) {
+		*p++ = (u8)v;
+	} else if (v <= 16383) {
+		*p++ = (u8)(0x40 | (v >> 8));
+		*p++ = (u8)v;
+	} else if (v <= 1073741823) {
+		*p++ = (u8)(0x80 | (v >> 24));
+		*p++ = (u8)(v >> 16);
+		*p++ = (u8)(v >>  8);
+		*p++ = (u8)v;
+	} else {
+		*p++ = (u8)(0xc0 | (v >> 56));
+		*p++ = (u8)(v >> 48);
+		*p++ = (u8)(v >> 40);
+		*p++ = (u8)(v >> 32);
+		*p++ = (u8)(v >> 24);
+		*p++ = (u8)(v >> 16);
+		*p++ = (u8)(v >>  8);
+		*p++ = (u8)v;
+	}
+	return p;
+}
+
+/* TLS vector helpers (big-endian length prefix).
+ * Each returns pointer past the last written byte.
+ */
+
+/* u8-length-prefixed vector: 1-byte len || body */
+static u8 *qinit_put_u8vec(u8 *p, const u8 *body, u32 blen)
+{
+	*p++ = (u8)blen;
+	memcpy(p, body, blen);
+	return p + blen;
+}
+
+/* u16-length-prefixed vector: 2-byte BE len || body */
+static u8 *qinit_put_u16vec(u8 *p, const u8 *body, u32 blen)
+{
+	*p++ = (u8)(blen >> 8);
+	*p++ = (u8)blen;
+	memcpy(p, body, blen);
+	return p + blen;
+}
+
+/* TLS extension: u16 type || u16-vec(data) */
+static u8 *qinit_put_ext(u8 *p, u16 etype, const u8 *data, u32 dlen)
+{
+	*p++ = (u8)(etype >> 8);
+	*p++ = (u8)etype;
+	return qinit_put_u16vec(p, data, dlen);
+}
+
+/* TLS 1.3 ClientHello handshake message (direct port of
+ * buildClientHelloWithRand from obf_imitate_quic.go).
+ *
+ * Buffer layout (all within the 512-byte scratch on the stack):
+ *   exts[]  - assembled extension block
+ *   body[]  - ClientHello body
+ *   out[]   - caller-provided; handshake type(1)+len(3)+body written
+ *
+ * Draw order (load-bearing, matches Go oracle):
+ *   rand(pub, 32)    - key_share public key
+ *   rand(random, 32) - ClientHello random
+ *
+ * Returns bytes written into out, or -1 if sni is too long.
+ */
+static int __maybe_unused
+qinit_build_client_hello(u8 *out, const char *sni,
+			 const u8 *scid, u32 scidlen,
+			 qinit_rand_fn rand, void *rctx)
+{
+	/* Extension scratch: max ~512 bytes (well within stack budget). */
+	u8 exts[512];
+	u8 body[512];
+	u8 *ep = exts; /* extension write pointer */
+	u8 *bp = body; /* body write pointer      */
+	u8 *op = out;  /* output write pointer    */
+	u32 snilen, extlen, bodylen;
+
+	/* Scratch buffers for extension sub-structures. */
+	u8 sni_list[3 + 255]; /* 0x00 | u16 len | name */
+	u8 ks[2 + 2 + 32];    /* group | u16 len | pub  */
+	u8 qtp[2 + 20];       /* 0x0f | scidlen | scid  */
+	u8 pub[32];
+	u8 random[32];
+	u32 sni_list_len;
+
+	snilen = 0;
+	while (sni[snilen])
+		snilen++;
+	if (snilen > 255 || snilen == 0)
+		return -1;
+
+	/* Draw randomness in Go-oracle order: pub first, then random. */
+	rand(rctx, pub, 32);
+	rand(rctx, random, 32);
+
+	/* --- Build extensions in Go-oracle order --- */
+
+	/* server_name (0x0000): server_name_list{ host_name(0x00) | u16 len | sni } */
+	sni_list[0] = 0x00;
+	sni_list[1] = (u8)(snilen >> 8);
+	sni_list[2] = (u8)snilen;
+	memcpy(sni_list + 3, sni, snilen);
+	sni_list_len = 3 + snilen;
+	{
+		u8 wrapped[2 + 3 + 255];
+		u8 *wp = wrapped;
+
+		wp = qinit_put_u16vec(wp, sni_list, sni_list_len);
+		ep = qinit_put_ext(ep, 0x0000, wrapped, (u32)(wp - wrapped));
+	}
+
+	/* supported_versions (0x002b): u8-vec of [0x03, 0x04] */
+	{
+		const u8 sv_body[] = {0x03, 0x04};
+		u8 sv[1 + 2];
+		u8 *sp = sv;
+
+		sp = qinit_put_u8vec(sp, sv_body, sizeof(sv_body));
+		ep = qinit_put_ext(ep, 0x002b, sv, (u32)(sp - sv));
+	}
+
+	/* supported_groups (0x000a): u16-vec of [0x00, 0x1d] (x25519) */
+	{
+		const u8 sg_body[] = {0x00, 0x1d};
+		u8 sg[2 + 2];
+		u8 *sp = sg;
+
+		sp = qinit_put_u16vec(sp, sg_body, sizeof(sg_body));
+		ep = qinit_put_ext(ep, 0x000a, sg, (u32)(sp - sg));
+	}
+
+	/* key_share (0x0033): u16-vec of { group 0x001d | u16 len | 32-byte pub } */
+	{
+		u8 ks_inner[2 + 2 + 32]; /* group | u16 len | pub */
+		u8 *kp = ks_inner;
+		u8 ks_outer[2 + sizeof(ks_inner)];
+		u8 *ko = ks_outer;
+
+		*kp++ = 0x00; *kp++ = 0x1d;          /* x25519 group */
+		kp = qinit_put_u16vec(kp, pub, 32);   /* key_exchange */
+		ko = qinit_put_u16vec(ko, ks_inner, (u32)(kp - ks_inner));
+		ep = qinit_put_ext(ep, 0x0033, ks_outer, (u32)(ko - ks_outer));
+	}
+	/* suppress unused-variable warning on ks (not used after the block above) */
+	(void)ks;
+
+	/* signature_algorithms (0x000d): u16-vec [0x0403, 0x0804, 0x0401] */
+	{
+		const u8 sa_body[] = {0x04, 0x03, 0x08, 0x04, 0x04, 0x01};
+		u8 sa[2 + 6];
+		u8 *sp = sa;
+
+		sp = qinit_put_u16vec(sp, sa_body, sizeof(sa_body));
+		ep = qinit_put_ext(ep, 0x000d, sa, (u32)(sp - sa));
+	}
+
+	/* application_layer_protocol_negotiation (0x0010): u16-vec(u8-vec("h3")) */
+	{
+		const u8 h3[] = {'h', '3'};
+		u8 alpn_inner[1 + 2]; /* u8-vec("h3") */
+		u8 alpn_outer[2 + sizeof(alpn_inner)];
+		u8 *ai = alpn_inner;
+		u8 *ao = alpn_outer;
+
+		ai = qinit_put_u8vec(ai, h3, sizeof(h3));
+		ao = qinit_put_u16vec(ao, alpn_inner, (u32)(ai - alpn_inner));
+		ep = qinit_put_ext(ep, 0x0010, alpn_outer, (u32)(ao - alpn_outer));
+	}
+
+	/* quic_transport_parameters (0x0039):
+	 * initial_source_connection_id (0x0f) = [0x0f, scidlen, scid...]
+	 */
+	{
+		u32 qtplen = 2 + scidlen;
+		u8 *qp = qtp;
+
+		*qp++ = 0x0f;
+		*qp++ = (u8)scidlen;
+		memcpy(qp, scid, scidlen);
+		ep = qinit_put_ext(ep, 0x0039, qtp, qtplen);
+	}
+
+	extlen = (u32)(ep - exts);
+
+	/* --- Build ClientHello body --- */
+	*bp++ = 0x03; *bp++ = 0x03;      /* legacy_version = TLS 1.2 */
+	memcpy(bp, random, 32); bp += 32; /* random */
+	bp = qinit_put_u8vec(bp, NULL, 0); /* legacy_session_id: empty */
+	{
+		const u8 cs[] = {0x13, 0x01, 0x13, 0x02, 0x13, 0x03};
+
+		bp = qinit_put_u16vec(bp, cs, sizeof(cs)); /* cipher_suites */
+	}
+	{
+		const u8 comp[] = {0x00};
+
+		bp = qinit_put_u8vec(bp, comp, sizeof(comp)); /* compression */
+	}
+	bp = qinit_put_u16vec(bp, exts, extlen); /* extensions */
+
+	bodylen = (u32)(bp - body);
+
+	/* --- Handshake wrapper: 0x01 + u24 length + body --- */
+	*op++ = 0x01;
+	*op++ = (u8)(bodylen >> 16);
+	*op++ = (u8)(bodylen >>  8);
+	*op++ = (u8)bodylen;
+	memcpy(op, body, bodylen);
+	op += bodylen;
+
+	return (int)(op - out);
+}
+
+/* QUIC CRYPTO frame (RFC 9001 §17.2.2):
+ *   varint(0x06) + varint(offset=0) + varint(len) + data
+ *
+ * Returns bytes written into out.
+ */
+static int __maybe_unused
+qinit_build_crypto_frame(u8 *out, const u8 *ch, int chlen)
+{
+	u8 *p = out;
+
+	p = qinit_put_varint(p, 0x06);          /* type  */
+	p = qinit_put_varint(p, 0);             /* offset */
+	p = qinit_put_varint(p, (u64)chlen);    /* length */
+	memcpy(p, ch, (u32)chlen);
+	p += chlen;
+	return (int)(p - out);
+}
+
+/* Test-only shim (userspace / KAT only). */
+#ifndef __KERNEL__
+int qinit_test_put_varint(u8 *out, u64 v)
+{
+	return (int)(qinit_put_varint(out, v) - out);
+}
+#endif

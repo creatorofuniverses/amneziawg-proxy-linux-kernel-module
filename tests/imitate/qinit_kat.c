@@ -109,6 +109,34 @@ static void test_aes128_gcm(void)
 	eq("aes128_gcm_tc4", out, want, sizeof(want));
 }
 
+/* QUIC variable-length integer encoding (RFC 9000 §16).
+ * KAT mirrors the Go TestAppendQUICVarint cases.
+ */
+static void test_varint(void)
+{
+	struct { u64 v; const char *hex; int n; } cs[] = {
+		{0, "00", 1}, {63, "3f", 1}, {1174, "4496", 2},
+		{494878333, "9d7f3e7d", 4},
+	};
+	u8 out[8];
+	char hx[20];
+	unsigned i, j;
+	int n;
+
+	for (i = 0; i < sizeof(cs)/sizeof(cs[0]); i++) {
+		n = qinit_test_put_varint(out, cs[i].v);
+		hx[0] = 0;
+		for (j = 0; j < (unsigned)n; j++)
+			sprintf(hx + 2*j, "%02x", out[j]);
+		if (n == cs[i].n && !strcmp(hx, cs[i].hex)) {
+			printf("PASS varint_%llu\n", (unsigned long long)cs[i].v);
+		} else {
+			printf("FAIL varint_%llu got %s\n", (unsigned long long)cs[i].v, hx);
+			fails++;
+		}
+	}
+}
+
 /* RFC 9001 Appendix A.1: client Initial keys for DCID 0x8394c8f03e515708. */
 static void test_derive_initial_keys_rfc9001(void)
 {
@@ -135,6 +163,7 @@ int main(void)
 	test_hkdf_extract();
 	test_aes128_gcm();
 	test_derive_initial_keys_rfc9001();
+	test_varint();
 	printf(fails ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", fails);
 	return fails ? 1 : 0;
 }
