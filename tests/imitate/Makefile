@@ -5,9 +5,17 @@ CFLAGS  := -O2 -Wall -Wextra -Werror -I. -I../../src
 harness: harness.c ../../src/imitate.c ../../src/imitate.h imitate_shim.h
 	$(CC) $(CFLAGS) -o harness harness.c ../../src/imitate.c
 
+# Task 1: aes.c only for now; sha256.c and qinit.c will be added in Tasks 2-3.
+QINIT_SRC := ../../src/crypto/aes.c
+qinit_kat: qinit_kat.c $(QINIT_SRC)
+	$(CC) $(CFLAGS) -o qinit_kat qinit_kat.c $(QINIT_SRC)
+
+test-qinit: qinit_kat
+	./qinit_kat
+
 .PHONY: test clean
 test: harness
 	./harness $(VECTORS)
 
 clean:
-	rm -f harness
+	rm -f harness qinit_kat
