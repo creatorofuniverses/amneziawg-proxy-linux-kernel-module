@@ -1,6 +1,12 @@
 # Client-side traffic imitation — Tier 4 `qinit` (fake QUIC Initial + SNI)
 
-- **Status:** approved design, not built
+- **Status:** IMPLEMENTED on branch `feat/qinit-tier4` (2026-06-17). Plan:
+  `docs/superpowers/plans/2026-06-17-kernel-qinit-tier4.md`. Validated by NIST/FIPS/
+  RFC KATs + RFC 9001 A.1 + a byte-exact golden vector vs the Go oracle + self-decrypt
+  round-trip + 256-iter property test + aioquic/tshark interop + in-kernel selftest
+  (passed on a live 7.0 kernel) + netns end-to-end vs a vanilla peer. Open: in-kernel
+  KASAN + cross-kernel `test-qemu` (need a CONFIG_KASAN / non-bleeding-edge-toolchain
+  host; userspace ASan clean as the interim memory oracle).
 - **Date:** 2026-06-17
 - **Scope:** `amneziawg-proxy-linux-kernel-module` (the feature) +
   `amneziawg-go-proxy` (test-only: a behavior-preserving randomness refactor of
