@@ -192,6 +192,28 @@ void qinit_hkdf_extract(const u8 *salt, u32 slen, const u8 *ikm, u32 ilen, u8 pr
 	qinit_hmac_sha256(salt, slen, ikm, ilen, prk);
 }
 
+/* RFC 9001 §5.2 client Initial key derivation. The salt is the HMAC *key* and
+ * the DCID is the IKM (initial_secret = HMAC(key=salt, msg=dcid)) — the order is
+ * load-bearing; the A.1 KAT only passes if it is correct.
+ */
+static const u8 quic_v1_initial_salt[20] = {
+	0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17,
+	0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a,
+};
+
+void qinit_derive_initial_keys(const u8 *dcid, u32 dcidlen,
+			       u8 key[16], u8 iv[12], u8 hp[16])
+{
+	u8 initial_secret[32], client_secret[32];
+
+	qinit_hkdf_extract(quic_v1_initial_salt, sizeof(quic_v1_initial_salt),
+			   dcid, dcidlen, initial_secret);
+	qinit_hkdf_expand_label(initial_secret, "client in", client_secret, 32);
+	qinit_hkdf_expand_label(client_secret, "quic key", key, 16);
+	qinit_hkdf_expand_label(client_secret, "quic iv", iv, 12);
+	qinit_hkdf_expand_label(client_secret, "quic hp", hp, 16);
+}
+
 /* TLS 1.3 HKDF-Expand-Label (RFC 8446 §7.1) with "tls13 " prefix + zero-length
  * context, built on HKDF-Expand (RFC 5869 §2.3). len <= 32 for all qinit uses
  * (key 16 / iv 12 / hp 16 / client-secret 32), so a single HMAC block (T(1))

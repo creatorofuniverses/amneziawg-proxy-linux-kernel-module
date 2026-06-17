@@ -109,6 +109,24 @@ static void test_aes128_gcm(void)
 	eq("aes128_gcm_tc4", out, want, sizeof(want));
 }
 
+/* RFC 9001 Appendix A.1: client Initial keys for DCID 0x8394c8f03e515708. */
+static void test_derive_initial_keys_rfc9001(void)
+{
+	const u8 dcid[8] = {0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08};
+	const u8 wk[16] = {0x1f, 0x36, 0x96, 0x13, 0xdd, 0x76, 0xd5, 0x46,
+			   0x77, 0x30, 0xef, 0xcb, 0xe3, 0xb1, 0xa2, 0x2d};
+	const u8 wiv[12] = {0xfa, 0x04, 0x4b, 0x2f, 0x42, 0xa3, 0xfd, 0x3b,
+			    0x46, 0xfb, 0x25, 0x5c};
+	const u8 whp[16] = {0x9f, 0x50, 0x44, 0x9e, 0x04, 0xa0, 0xe8, 0x10,
+			    0x28, 0x3a, 0x1e, 0x99, 0x33, 0xad, 0xed, 0xd2};
+	u8 key[16], iv[12], hp[16];
+
+	qinit_derive_initial_keys(dcid, sizeof(dcid), key, iv, hp);
+	eq("rfc9001_key", key, wk, 16);
+	eq("rfc9001_iv", iv, wiv, 12);
+	eq("rfc9001_hp", hp, whp, 16);
+}
+
 int main(void)
 {
 	test_aes128_fips197();
@@ -116,6 +134,7 @@ int main(void)
 	test_hmac_sha256();
 	test_hkdf_extract();
 	test_aes128_gcm();
+	test_derive_initial_keys_rfc9001();
 	printf(fails ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", fails);
 	return fails ? 1 : 0;
 }
