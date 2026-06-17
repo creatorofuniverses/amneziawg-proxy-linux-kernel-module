@@ -1407,4 +1407,27 @@ static inline char *nla_strdup(const struct nlattr *nla, gfp_t flags)
 	blake2s(out, in, key, outlen, inlen, keylen)
 #endif
 
+/*
+ * Kernel 6.11+ removed the legacy prandom_bytes()/prandom_u32_max() wrappers
+ * (upstream commit series "random: remove dead code" / "lib: prandom: remove
+ * prandom_bytes() and prandom_u32_max()"). The in-tree selftests still use
+ * them. Map to the modern RNG API. get_random_u32_below() has been present
+ * since 6.1.4 (shimmed above for older kernels), so it is always available
+ * here. Gate version pinned at 6.11.0 -- confirmed absent in 7.0.12 tree,
+ * and present in 6.10 and earlier kernels.
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+#include <linux/random.h>
+static inline void __compat_prandom_bytes(void *buf, size_t len)
+{
+	get_random_bytes(buf, len);
+}
+#define prandom_bytes(buf, len) __compat_prandom_bytes(buf, len)
+static inline u32 __compat_prandom_u32_max(u32 ceil)
+{
+	return get_random_u32_below(ceil);
+}
+#define prandom_u32_max(ceil) __compat_prandom_u32_max(ceil)
+#endif
+
 #endif /* _WG_COMPAT_H */
