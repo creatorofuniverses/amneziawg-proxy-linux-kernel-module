@@ -241,6 +241,24 @@ echo "[*] Loading dev module: $KO"
 rmmod amneziawg 2>/dev/null || true
 insmod "$KO"
 
+# Assert the kernel is actually running the module we just built, not a stale or
+# distro/DKMS amneziawg that a failed rmmod may have left resident.  srcversion is
+# a content hash emitted by modpost, so it uniquely fingerprints THIS .ko and works
+# for both debug and non-debug builds (unlike the selftest banner, which only the
+# debug build prints).
+WANT_SRCVERSION="$(modinfo -F srcversion "$KO" 2>/dev/null || true)"
+GOT_SRCVERSION="$(cat /sys/module/amneziawg/srcversion 2>/dev/null || true)"
+if [[ -z "$GOT_SRCVERSION" ]]; then
+	echo "ERROR: amneziawg module is not loaded after insmod $KO." >&2
+	exit 1
+fi
+if [[ -n "$WANT_SRCVERSION" && "$WANT_SRCVERSION" != "$GOT_SRCVERSION" ]]; then
+	echo "ERROR: loaded amneziawg srcversion ($GOT_SRCVERSION) does not match the" >&2
+	echo "       built module $KO ($WANT_SRCVERSION) -- a stale/stock module is resident." >&2
+	exit 1
+fi
+echo "[*] Verified loaded module matches $KO (srcversion ${GOT_SRCVERSION:-unknown})"
+
 # Turn on the module's pr_debug/net_dbg messages at runtime (e.g. the receiver's
 # "Unknown message ... packet dropped"). Works on a non-debug build too, as long
 # as the kernel has CONFIG_DYNAMIC_DEBUG. Best-effort.
