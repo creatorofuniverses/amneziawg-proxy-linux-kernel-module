@@ -2,7 +2,10 @@
 
 - **Status:** approved design, not built
 - **Date:** 2026-06-17
-- **Scope:** `amneziawg-proxy-linux-kernel-module` **only** (no tools/netlink change — see §4)
+- **Scope:** `amneziawg-proxy-linux-kernel-module` (the feature) +
+  `amneziawg-go-proxy` (test-only: a behavior-preserving randomness refactor of
+  the oracle so it can emit a deterministic golden vector — see §8). **No
+  `amneziawg-tools-proxy` change and no netlink/ABI change** (§4).
 - **Phase:** Phase 2 of the client-imitation feature; Tiers 1–3 shipped on `master`
   (merged PR #1). This spec is the deferred Tier 4 from
   `docs/superpowers/specs/2026-06-16-kernel-traffic-imitation-design.md` §1, §9.6.
@@ -37,9 +40,9 @@ in the oracle.
 | Property | Tiers 1–3 | Tier 4 (`qinit`) |
 | --- | --- | --- |
 | Primitives | none (byte-poking PRNG) | AES-128-GCM, HKDF-SHA256, AES-ECB |
-| Reproducibility | byte-exact with Go (golden vectors) | **not** byte-reproducible (random CIDs/PN/randoms) |
-| Validation oracle | golden vector file | RFC 9001 worked example + cross-impl decrypt |
-| Repos touched | 3 (kernel, go, tools) | **1** (kernel only) |
+| Reproducibility | byte-exact with Go (golden vectors) | non-deterministic in production (random CIDs/PN/randoms); **made deterministic under pinned randomness** for the golden vector (§8) |
+| Validation oracle | golden vector file | RFC 9001 A.1 key schedule + **byte-exact golden vector** (Go w/ injected randomness) + self-decrypt round-trip |
+| Repos touched | 3 (kernel, go, tools) | **2** (kernel = feature; go = test-only oracle refactor); tools untouched |
 | Netlink/ABI | new `WGDEVICE_A_IMITATE_PROTOCOL` | **none** (rides in existing `I1`–`I5` desc) |
 
 The crypto primitives qinit needs do **not** exist in the in-tree `src/crypto/
@@ -72,7 +75,10 @@ Consequences:
   the Tiers 1–3 work.
 - **No tools change.** Existing `awg set` / `awg show` round-trip the `qinit`
   desc string unchanged.
-- All implementation lands in the kernel-module repo.
+- The **feature** lands entirely in the kernel-module repo. The only other repo
+  touched is `amneziawg-go-proxy`, and only for **test infrastructure** (a
+  behavior-preserving randomness refactor of the oracle to emit a golden vector —
+  §8); no production Go behavior changes.
 
 ## 5. Architecture
 
@@ -255,43 +261,59 @@ that runs in-kernel, and as `src/selftest/` units in the debug build.
 | HKDF-SHA256 | RFC 5869 | Appendix A.1–A.3 |
 | AES-128-GCM | NIST CAVP `gcmEncrypt` | fixed key/IV/AAD/PT → CT+tag |
 
-**Layer 2 — pipeline correctness, in two parts** (a whole-datagram byte-match
-against RFC 9001 Appendix A is *not* achievable and is deliberately **not** the
-target: the RFC's worked example carries a *different* ClientHello, so a different
-plaintext necessarily yields a different 1200-byte datagram. The Go oracle makes
-the same split — see `obf_imitate_quic_test.go`):
+**Layer 2 — pipeline correctness, in three parts.** Note a whole-datagram match
+against *RFC 9001 Appendix A* is **not** achievable (its worked example carries a
+*different* ClientHello, so a different plaintext yields a different datagram) — so
+the RFC anchors the **key schedule**, and a **Go-derived golden vector** anchors
+the **whole datagram**:
 
 1. **Key-schedule byte-exactness vs RFC 9001 Appendix A.1.** Feed the RFC's fixed
    DCID (`0x8394c8f03e515708`) to `derive_initial_keys` and assert
-   `key`/`iv`/`hp` equal the RFC's documented values **byte-for-byte**. This is
-   the legitimate "RFC worked example" anchor and transitively proves
+   `key`/`iv`/`hp` equal the RFC's documented values **byte-for-byte**. The
+   legitimate "RFC worked example" anchor; transitively proves
    SHA-256 → HMAC → HKDF-Extract/Expand end-to-end. (Mirrors the oracle's
    `TestDeriveInitialKeysRFC9001`.)
-2. **Whole datagram by self-decrypt round-trip.** Pin `qinit_rand_fn`, call
-   `qinit_build`, then independently derive the keys, AEAD-`Open` the payload,
-   strip header protection, and parse the ClientHello — asserting SNI / ALPN /
-   `initial_source_connection_id` recover correctly. This exercises the full
-   seal + header-protection + framing pipeline against a known answer without
-   requiring a byte-identical datagram. (Mirrors the oracle's
-   `TestQInitRoundTrip`; this is the in-tree half of the "cross-impl decrypt" in
-   the §2 table.)
+2. **Whole-datagram byte-exact cross-impl golden vector (maximum guarantee).**
+   The Go oracle is refactored (test-only, behavior-preserving) so the production
+   builders accept an injected randomness source:
+   - `buildQUICInitial` / `buildClientHello` gain an `io.Reader` parameter (e.g.
+     `buildQUICInitialWithRand(r io.Reader, …)`); the existing exported entry
+     points become thin wrappers passing `crypto/rand.Reader`, so **production
+     output is byte-for-byte unchanged** (same source, same draw order).
+   - With randomness pinned to a fixed stream, Go now emits a **deterministic**
+     1200-byte datagram. Commit it as a frozen golden vector
+     (`testdata/qinit_vector.bin` + the pinned random stream).
+   - The **C test** feeds the *same* fixed stream to `qinit_rand_fn` and asserts
+     `qinit_build` output equals the committed vector **byte-for-byte** — a true
+     cross-implementation equality proof (identical ClientHello layout, extension
+     order, cipher suites, transport params, AES-GCM seal, and header
+     protection). This restores the Tiers 1–3 golden-vector oracle model under
+     pinned randomness.
+   - A **Go test** regenerates the datagram from the pinned stream and asserts it
+     still equals the committed vector — guarding against oracle drift on the Go
+     side. The C↔Go agreement is thus mediated by the committed vector; neither
+     test needs the other's toolchain at runtime.
 
-   *Optional drift anchor:* pin the randomness once and commit `qinit_build`'s
-   output as a frozen golden vector — this catches *regression/drift*, not
-   correctness. (A true byte-exact cross-impl match against the Go oracle would
-   require first refactoring the oracle to accept injected randomness — today its
-   `rand.Read` calls are hardcoded — so it is out of scope unless that refactor is
-   undertaken.)
+   *Draw-order precondition:* C and Go must consume the pinned stream in the same
+   order and amounts (`dcid 8, scid 8, pn 4, key_share 32, ch_random 32`) — the
+   review verified this order matches today; the byte-exact test makes any future
+   divergence a hard failure.
+3. **Whole datagram by self-decrypt round-trip.** Pin `qinit_rand_fn`, call
+   `qinit_build`, then independently derive keys, AEAD-`Open`, strip header
+   protection, and parse the ClientHello — asserting SNI / ALPN /
+   `initial_source_connection_id` recover. Complements the golden vector: the
+   vector proves *byte-identity to Go*; the round-trip proves *semantic validity*
+   (a real decoder can read the SNI) and localizes failures to the seal/HP/framing
+   stage. (Mirrors the oracle's `TestQInitRoundTrip`.)
 
-**Layer 3 — cross-implementation / cross-language interop:** generate the Initial
-in C, then decrypt + parse it with implementations we did not write, asserting the
-SNI/ALPN/transport-params recover correctly:
+**Layer 3 — independent cross-language interop:** the Layer-2 golden vector
+already proves C↔Go byte-identity, so this layer adds decoders **we did not
+write** to catch "C and Go agree but are *both* wrong about the spec":
 
-1. The Go oracle's own `deriveInitialKeys` + AEAD `Open` + ClientHello parse.
-2. An independent third-party stack (aioquic in Python, or quic-go) — catches
-   "we and the Go fork agree but are both wrong."
-3. `tshark -Y quic` dissection asserting the SNI field appears (automatable
-   realism check).
+1. An independent third-party QUIC stack (aioquic in Python, or quic-go) decrypts
+   the C-generated Initial and recovers SNI/ALPN/transport-params.
+2. `tshark -Y quic` dissection asserting the SNI field appears (automatable
+   realism check — what a DPI box would see).
 
 **Layer 4 — randomized property test:** generate N Initials with real random
 inputs; assert every one decrypts, parses, and yields the correct SNI (catches
@@ -307,7 +329,9 @@ qinit tags repeatedly under `make module-debug` (subject to the pre-existing
 the target kernel, run the userspace harness under ASan as the interim memory
 oracle).
 
-## 9. Files touched (kernel repo only)
+## 9. Files touched
+
+**Kernel repo (`amneziawg-proxy-linux-kernel-module`) — the feature:**
 
 - `src/qinit.c`, `src/qinit.h` — new builder + QUIC/TLS framing + HKDF/GCM/HP.
 - `src/crypto/aes.c`, `src/crypto/aes.h` — new (AES-128 encrypt).
@@ -322,28 +346,47 @@ oracle).
   `random_char`, `random_digit`, `imitate_{quic,dns,stun,sip}`).
 - `src/selftest/` — primitive KATs + RFC 9001 App. A test.
 - `tests/imitate/` — extend the userspace harness with the KATs, the byte-exact
-  test, and the interop/property tests; netns case for `i1=<qinit ...>`.
+  golden-vector test, and the interop/property tests; netns case for
+  `i1=<qinit ...>`.
+- `tests/imitate/testdata/qinit_vector.bin` (+ the pinned random stream) — the
+  committed Go-derived golden vector (§8 Layer 2).
+
+**Go repo (`amneziawg-go-proxy`) — test-only, behavior-preserving:**
+
+- `device/obf_imitate_quic.go` — add `io.Reader` randomness parameter to
+  `buildQUICInitial`/`buildClientHello`; existing entry points become wrappers
+  passing `crypto/rand.Reader` (zero production-behavior change).
+- `device/obf_imitate_quic_test.go` — pinned-stream deterministic build →
+  regenerate/assert the committed golden vector (drift guard).
+
+**Tools repo (`amneziawg-tools-proxy`):** untouched.
 
 ## 10. Implementation phasing
 
 1. **Vendored primitives** (`aes.c`, `sha256.c`) + Layer-1 KATs green in the
    userspace harness. (No kernel behavior change.)
-2. **`qinit.c` builder** (HKDF, key derivation, ClientHello, GCM seal, header
-   protection) + Layer-2 green: RFC 9001 A.1 key-schedule byte-exactness **and**
-   the self-decrypt round-trip (SNI/ALPN/ISCID recover).
-3. **Modifier-model `ctx` extension** (§5.3) + `qinit` tag parser/modifier in
+2. **Go oracle randomness refactor** (test-only, behavior-preserving) + pin a
+   fixed stream + **commit the golden vector** (`qinit_vector.bin`); Go drift-guard
+   test green. (No kernel work yet; this produces the byte-exact target.)
+3. **`qinit.c` builder** (HKDF, key derivation, ClientHello, GCM seal, header
+   protection) + Layer-2 green: RFC 9001 A.1 key-schedule byte-exactness, the
+   **byte-exact match against the committed golden vector**, and the self-decrypt
+   round-trip (SNI/ALPN/ISCID recover).
+4. **Modifier-model `ctx` extension** (§5.3) + `qinit` tag parser/modifier in
    `junk.c` + exclusivity validation. KASAN/ASan on the `ctx` lifetime.
-4. **Interop + property tests** (Layer 3: Go decrypt, aioquic/tshark; Layer 4).
-5. **netns end-to-end**: `i1=<qinit example.com>` against a vanilla peer — assert
+5. **Interop + property tests** (Layer 3: aioquic/tshark independent decode;
+   Layer 4 randomized).
+6. **netns end-to-end**: `i1=<qinit example.com>` against a vanilla peer — assert
    the peer drops it as junk and the tunnel still handshakes — plus KASAN under
    load.
 
 ## 11. Open risks
 
 - **GHASH/GCM correctness** is the fiddliest vendored code; covered before any
-  kernel wiring by the Layer-1 NIST `gcmEncrypt` vectors and the Layer-2
-  self-decrypt round-trip (build → AEAD-`Open` → parse). The RFC 9001 A.1
-  key-schedule match anchors HKDF/HMAC/SHA-256, not GCM.
+  kernel wiring by the Layer-1 NIST `gcmEncrypt` vectors, the Layer-2 byte-exact
+  golden vector (any GCM/GHASH divergence flips a ciphertext byte → vector
+  mismatch), and the self-decrypt round-trip. The RFC 9001 A.1 key-schedule match
+  anchors HKDF/HMAC/SHA-256, not GCM.
 - **`ctx` lifetime** in the UAF-sensitive junk path (§5.3) — covered by KASAN/
   ASan in phase 3 and exercised by repeated tag set/reset.
 - **`prandom_*` debug-build gap** (pre-existing, from Tiers 1–3) may block a true
