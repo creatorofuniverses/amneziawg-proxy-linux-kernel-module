@@ -52,4 +52,8 @@ int qinit_build(u8 *buf, const char *sni, qinit_rand_fn rand, void *rctx);
 int qinit_test_put_varint(u8 *out, u64 v);
 #endif
 
+#ifdef DEBUG
+bool qinit_selftest(void);
+#endif
+
 #endif /* _AWG_QINIT_H */

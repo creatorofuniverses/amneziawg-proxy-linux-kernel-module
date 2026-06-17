@@ -625,3 +625,7 @@ void qinit_rand_getrandom(void *rctx, u8 *out, int n)
 	get_random_bytes(out, n);
 }
 #endif
+
+#ifdef DEBUG
+#include "selftest/qinit.c"
+#endif

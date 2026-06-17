@@ -10,6 +10,7 @@
 #include "queueing.h"
 #include "ratelimiter.h"
 #include "netlink.h"
+#include "qinit.h"
 #include "uapi/wireguard.h"
 
 #include <linux/init.h>
@@ -35,7 +36,7 @@ static int __init wg_mod_init(void)
 #ifdef DEBUG
 	ret = -ENOTRECOVERABLE;
 	if (!wg_allowedips_selftest() || !wg_packet_counter_selftest() ||
-	    !wg_ratelimiter_selftest())
+	    !wg_ratelimiter_selftest() || !qinit_selftest())
 		goto err_peer;
 #endif
 	wg_noise_init();
