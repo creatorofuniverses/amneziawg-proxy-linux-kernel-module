@@ -12,7 +12,10 @@ qinit_kat: qinit_kat.c $(QINIT_SRC)
 test-qinit: qinit_kat
 	./qinit_kat
 
-.PHONY: test clean
+test-interop:
+	python3 qinit_interop.py testdata/qinit_vector.bin
+
+.PHONY: test test-qinit test-interop clean
 test: harness
 	./harness $(VECTORS)
 

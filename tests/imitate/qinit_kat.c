@@ -109,6 +109,21 @@ static void test_aes128_gcm(void)
 	eq("aes128_gcm_tc4", out, want, sizeof(want));
 }
 
+/* Harness-local LCG PRNG (Knuth multiplicative, 32-bit) — distinct from
+ * production; only decodability is asserted, not specific bytes.
+ */
+struct lcgrand { u32 s; };
+static void lcgrand_fn(void *rctx, u8 *out, int n)
+{
+	struct lcgrand *lr = rctx;
+	int i;
+
+	for (i = 0; i < n; i++) {
+		lr->s = lr->s * 1664525u + 1013904223u;
+		out[i] = (u8)(lr->s >> 24);
+	}
+}
+
 /* Deterministic rand source: sequential replay of a fixed buffer. */
 struct fixedrand { const u8 *p; int n, off; };
 static void fixedrand_fn(void *rctx, u8 *out, int n)
@@ -503,6 +518,36 @@ static void test_derive_initial_keys_rfc9001(void)
 	eq("rfc9001_hp", hp, whp, 16);
 }
 
+/* Layer-4 randomised property test: generate N=256 datagrams each with a
+ * unique LCG seed and assert that every one decodes via the harness decoder
+ * and recovers the expected SNI.  Catches varint/length edge cases that fixed
+ * vectors miss.
+ */
+static void test_property(void)
+{
+	u8 pkt[1200];
+	u32 s = 0x1234567u;
+	int i, ok = 1;
+
+	for (i = 0; i < 256; i++) {
+		struct lcgrand lr;
+
+		lr.s = s + (u32)i * 2654435761u;
+		if (qinit_build(pkt, "example.com", lcgrand_fn, &lr) != 0) {
+			ok = 0; break;
+		}
+		if (!qinit_harness_decode_sni(pkt, 1200, "example.com")) {
+			ok = 0; break;
+		}
+	}
+	if (ok)
+		printf("PASS property_256\n");
+	else {
+		printf("FAIL property_256 at iter %d\n", i);
+		fails++;
+	}
+}
+
 int main(void)
 {
 	test_aes128_fips197();
@@ -514,6 +559,7 @@ int main(void)
 	test_varint();
 	test_golden_vector();
 	test_round_trip();
+	test_property();
 	printf(fails ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", fails);
 	return fails ? 1 : 0;
 }
