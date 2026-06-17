@@ -5,8 +5,8 @@ CFLAGS  := -O2 -Wall -Wextra -Werror -I. -I../../src
 harness: harness.c ../../src/imitate.c ../../src/imitate.h imitate_shim.h
 	$(CC) $(CFLAGS) -o harness harness.c ../../src/imitate.c
 
-# Task 1: aes.c only for now; sha256.c and qinit.c will be added in Tasks 2-3.
-QINIT_SRC := ../../src/crypto/aes.c
+# Task 2: aes.c + sha256.c; qinit.c will be added in Task 3.
+QINIT_SRC := ../../src/crypto/aes.c ../../src/crypto/sha256.c
 qinit_kat: qinit_kat.c $(QINIT_SRC)
 	$(CC) $(CFLAGS) -o qinit_kat qinit_kat.c $(QINIT_SRC)
 
