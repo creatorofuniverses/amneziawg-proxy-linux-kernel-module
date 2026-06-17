@@ -6,7 +6,7 @@
 
 struct wg_peer;
 
-typedef void(*jp_modifier_func)(char*, int, struct wg_peer*);
+typedef void(*jp_modifier_func)(char*, int, struct wg_peer*, void*);
 
 struct jp_tag
 {
@@ -14,6 +14,7 @@ struct jp_tag
     jp_modifier_func func;
     struct list_head head;
     int pkt_size;
+    void* ctx;          /* opaque per-tag data (e.g. qinit SNI); kstrdup-owned */
 };
 
 void jp_tag_free(struct jp_tag* tag);
@@ -24,6 +25,7 @@ struct jp_modifier
     jp_modifier_func func;
     char* buf;
     int buf_len;
+    void* ctx;          /* independent kstrdup copy of the tag's ctx */
 };
 
 struct jp_spec

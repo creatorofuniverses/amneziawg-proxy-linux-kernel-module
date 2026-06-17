@@ -56,7 +56,7 @@ error:
     return err;
 }
 
-static void pkt_counter_modifier(char* buf, int len, struct wg_peer *peer) {
+static void pkt_counter_modifier(char* buf, int len, struct wg_peer *peer, void *ctx) {
     int val = atomic_read(&peer->jp_packet_counter);
     val = htonl(val);
     memcpy(buf, &val, sizeof(val));
@@ -79,7 +79,7 @@ static int parse_c_tag(char* val, struct list_head* head) {
     return 0;
 }
 
-static void unix_time_modifier(char* buf, int len, struct wg_peer *peer) {
+static void unix_time_modifier(char* buf, int len, struct wg_peer *peer, void *ctx) {
     u32 time = (u32)ktime_get_real_seconds();
     time = htonl(time);
     memcpy(buf, &time, sizeof(time));
@@ -102,7 +102,7 @@ static int parse_t_tag(char* val, struct list_head* head) {
     return 0;
 }
 
-static void random_byte_modifier(char* buf, int len, struct wg_peer *peer) {
+static void random_byte_modifier(char* buf, int len, struct wg_peer *peer, void *ctx) {
     get_random_bytes(buf, len);
 }
 
@@ -127,7 +127,7 @@ static int parse_r_tag(char* val, struct list_head* head) {
 #define ALPHABET_LEN 26
 #define LETTER_LEN (ALPHABET_LEN * 2)
 
-static void random_char_modifier(char* buf, int len, struct wg_peer *peer) {
+static void random_char_modifier(char* buf, int len, struct wg_peer *peer, void *ctx) {
     int i;
     u32 byte;
 
@@ -157,7 +157,7 @@ static int parse_rc_tag(char* val, struct list_head* head) {
 
 #define DIGIT_LEN 10
 
-static void random_digit_modifier(char* buf, int len, struct wg_peer *peer) {
+static void random_digit_modifier(char* buf, int len, struct wg_peer *peer, void *ctx) {
     int i;
 
     for (i = 0; i < len; ++i)
@@ -182,28 +182,28 @@ static int parse_rd_tag(char* val, struct list_head* head) {
     return 0;
 }
 
-static void imitate_quic_modifier(char *buf, int len, struct wg_peer *peer)
+static void imitate_quic_modifier(char *buf, int len, struct wg_peer *peer, void *ctx)
 {
 	u32 seed = imitate_junk_seed((u32)atomic_read(&peer->jp_packet_counter));
 
 	imitate_fill_whole((u8 *)buf, len, seed, IMITATE_QUIC);
 }
 
-static void imitate_dns_modifier(char *buf, int len, struct wg_peer *peer)
+static void imitate_dns_modifier(char *buf, int len, struct wg_peer *peer, void *ctx)
 {
 	u32 seed = imitate_junk_seed((u32)atomic_read(&peer->jp_packet_counter));
 
 	imitate_fill_whole((u8 *)buf, len, seed, IMITATE_DNS);
 }
 
-static void imitate_stun_modifier(char *buf, int len, struct wg_peer *peer)
+static void imitate_stun_modifier(char *buf, int len, struct wg_peer *peer, void *ctx)
 {
 	u32 seed = imitate_junk_seed((u32)atomic_read(&peer->jp_packet_counter));
 
 	imitate_fill_whole((u8 *)buf, len, seed, IMITATE_STUN);
 }
 
-static void imitate_sip_modifier(char *buf, int len, struct wg_peer *peer)
+static void imitate_sip_modifier(char *buf, int len, struct wg_peer *peer, void *ctx)
 {
 	u32 seed = imitate_junk_seed((u32)atomic_read(&peer->jp_packet_counter));
 
@@ -299,13 +299,17 @@ int jp_parse_tags(char* str, struct list_head* head) {
 
 void jp_tag_free(struct jp_tag* tag) {
     kfree(tag->pkt);
+    kfree(tag->ctx);
 }
 
 void jp_spec_free(struct jp_spec *spec) {
+    int i;
     kfree(spec->desc);
     spec->desc = NULL;
     kfree(spec->pkt);
     spec->pkt = NULL;
+    for (i = 0; i < spec->mods_size; i++)
+        kfree(spec->mods[i].ctx);
     kfree(spec->mods);
     spec->mods = NULL;
     spec->pkt_size = 0;
@@ -376,7 +380,14 @@ int jp_spec_setup(struct jp_spec *spec) {
             mod->func = tag->func;
             mod->buf = spec->pkt + spec->pkt_size;
             mod->buf_len = tag->pkt_size;
-            
+            if (tag->ctx) {
+                mod->ctx = kstrdup(tag->ctx, GFP_KERNEL);
+                if (!mod->ctx) {       /* tag still owns tag->ctx; freed by the
+                                        * unconditional cleanup tail below */
+                    err = -ENOMEM;
+                    goto error;
+                }
+            }
             spec->mods_size++;
         }
 
@@ -401,6 +412,6 @@ void jp_spec_applymods(struct jp_spec* spec, struct wg_peer* peer) {
     for (i = 0; i < spec->mods_size; i++) {
         mod = &spec->mods[i];
         if(mod->func)
-            mod->func(mod->buf, mod->buf_len, peer);
+            mod->func(mod->buf, mod->buf_len, peer, mod->ctx);
     }
 }
