@@ -286,7 +286,8 @@ static u8 *qinit_put_varint(u8 *p, u64 v)
 static u8 *qinit_put_u8vec(u8 *p, const u8 *body, u32 blen)
 {
 	*p++ = (u8)blen;
-	memcpy(p, body, blen);
+	if (blen)
+		memcpy(p, body, blen);
 	return p + blen;
 }
 
@@ -295,7 +296,8 @@ static u8 *qinit_put_u16vec(u8 *p, const u8 *body, u32 blen)
 {
 	*p++ = (u8)(blen >> 8);
 	*p++ = (u8)blen;
-	memcpy(p, body, blen);
+	if (blen)
+		memcpy(p, body, blen);
 	return p + blen;
 }
 
@@ -336,7 +338,6 @@ qinit_build_client_hello(u8 *out, const char *sni,
 
 	/* Scratch buffers for extension sub-structures. */
 	u8 sni_list[3 + 255]; /* 0x00 | u16 len | name */
-	u8 ks[2 + 2 + 32];    /* group | u16 len | pub  */
 	u8 qtp[2 + 20];       /* 0x0f | scidlen | scid  */
 	u8 pub[32];
 	u8 random[32];
@@ -400,8 +401,6 @@ qinit_build_client_hello(u8 *out, const char *sni,
 		ko = qinit_put_u16vec(ko, ks_inner, (u32)(kp - ks_inner));
 		ep = qinit_put_ext(ep, 0x0033, ks_outer, (u32)(ko - ks_outer));
 	}
-	/* suppress unused-variable warning on ks (not used after the block above) */
-	(void)ks;
 
 	/* signature_algorithms (0x000d): u16-vec [0x0403, 0x0804, 0x0401] */
 	{
