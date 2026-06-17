@@ -109,6 +109,354 @@ static void test_aes128_gcm(void)
 	eq("aes128_gcm_tc4", out, want, sizeof(want));
 }
 
+/* Deterministic rand source: sequential replay of a fixed buffer. */
+struct fixedrand { const u8 *p; int n, off; };
+static void fixedrand_fn(void *rctx, u8 *out, int n)
+{
+	struct fixedrand *fr = rctx;
+	int i;
+
+	for (i = 0; i < n; i++)
+		out[i] = (fr->off < fr->n) ? fr->p[fr->off++] : 0;
+}
+
+static int read_file(const char *path, u8 *buf, int max)
+{
+	FILE *f = fopen(path, "rb");
+	int n;
+
+	if (!f)
+		return -1;
+	n = (int)fread(buf, 1, max, f);
+	fclose(f);
+	return n;
+}
+
+/* Harness-local AES-128-GCM open (CTR decrypt + GHASH tag verify).
+ * Returns 1 if tag is valid, 0 on auth failure.
+ * ct contains the ciphertext (ctlen bytes) followed by the 16-byte tag.
+ * pt receives the ctlen decrypted bytes.
+ */
+static int aes128_gcm_open(const u8 key[16], const u8 nonce[12],
+			   const u8 *aad, u32 aadlen,
+			   const u8 *ct, u32 ctlen, u8 *pt)
+{
+	struct aes128_ctx ctx;
+	u8 h[16]     = {0};
+	u8 j0[16]    = {0};
+	u8 ctr[16]   = {0};
+	u8 ks[16]    = {0};
+	u8 ghash[16] = {0};
+	u8 lenbuf[16];
+	u8 tag_calc[16], tag_enc[16];
+	u32 i;
+
+	aes128_set_encrypt_key(&ctx, key);
+	aes128_encrypt_block(&ctx, h, h);
+
+	memcpy(j0, nonce, 12);
+	j0[15] = 0x01u;
+
+	/* GHASH over AAD then CT. */
+	{
+		u8 blk[16];
+		const u8 *p = aad;
+		u32 rem = aadlen;
+
+		while (rem >= 16) {
+			for (i = 0; i < 16; i++) ghash[i] ^= p[i];
+			/* GF multiply - reuse same logic as seal */
+			{
+				u8 z[16]; u8 v[16]; u8 res[16] = {0};
+				int b; u8 carry;
+
+				memcpy(z, ghash, 16);
+				memcpy(v, h, 16);
+				for (i = 0; i < 16; i++) {
+					for (b = 7; b >= 0; b--) {
+						int j;
+
+						if (z[i] & (1u << b))
+							for (j = 0; j < 16; j++) res[j] ^= v[j];
+						carry = v[15] & 1u;
+						for (j = 15; j > 0; j--)
+							v[j] = (v[j] >> 1) | ((v[j-1] & 1u) << 7);
+						v[0] >>= 1;
+						if (carry) v[0] ^= 0xe1u;
+					}
+				}
+				memcpy(ghash, res, 16);
+			}
+			p += 16; rem -= 16;
+		}
+		if (rem > 0) {
+			memset(blk, 0, 16);
+			for (i = 0; i < rem; i++) blk[i] = p[i];
+			for (i = 0; i < 16; i++) ghash[i] ^= blk[i];
+			{
+				u8 z[16]; u8 v[16]; u8 res[16] = {0};
+				int b; u8 carry;
+
+				memcpy(z, ghash, 16);
+				memcpy(v, h, 16);
+				for (i = 0; i < 16; i++) {
+					for (b = 7; b >= 0; b--) {
+						int j;
+
+						if (z[i] & (1u << b))
+							for (j = 0; j < 16; j++) res[j] ^= v[j];
+						carry = v[15] & 1u;
+						for (j = 15; j > 0; j--)
+							v[j] = (v[j] >> 1) | ((v[j-1] & 1u) << 7);
+						v[0] >>= 1;
+						if (carry) v[0] ^= 0xe1u;
+					}
+				}
+				memcpy(ghash, res, 16);
+			}
+		}
+	}
+
+	{
+		const u8 *p = ct;
+		u32 rem = ctlen;
+
+		while (rem >= 16) {
+			for (i = 0; i < 16; i++) ghash[i] ^= p[i];
+			{
+				u8 z[16]; u8 v[16]; u8 res[16] = {0};
+				int b; u8 carry;
+
+				memcpy(z, ghash, 16);
+				memcpy(v, h, 16);
+				for (i = 0; i < 16; i++) {
+					for (b = 7; b >= 0; b--) {
+						int j;
+
+						if (z[i] & (1u << b))
+							for (j = 0; j < 16; j++) res[j] ^= v[j];
+						carry = v[15] & 1u;
+						for (j = 15; j > 0; j--)
+							v[j] = (v[j] >> 1) | ((v[j-1] & 1u) << 7);
+						v[0] >>= 1;
+						if (carry) v[0] ^= 0xe1u;
+					}
+				}
+				memcpy(ghash, res, 16);
+			}
+			p += 16; rem -= 16;
+		}
+		if (rem > 0) {
+			u8 blk[16];
+
+			memset(blk, 0, 16);
+			for (i = 0; i < rem; i++) blk[i] = p[i];
+			for (i = 0; i < 16; i++) ghash[i] ^= blk[i];
+			{
+				u8 z[16]; u8 v[16]; u8 res[16] = {0};
+				int b; u8 carry;
+
+				memcpy(z, ghash, 16);
+				memcpy(v, h, 16);
+				for (i = 0; i < 16; i++) {
+					for (b = 7; b >= 0; b--) {
+						int j;
+
+						if (z[i] & (1u << b))
+							for (j = 0; j < 16; j++) res[j] ^= v[j];
+						carry = v[15] & 1u;
+						for (j = 15; j > 0; j--)
+							v[j] = (v[j] >> 1) | ((v[j-1] & 1u) << 7);
+						v[0] >>= 1;
+						if (carry) v[0] ^= 0xe1u;
+					}
+				}
+				memcpy(ghash, res, 16);
+			}
+		}
+	}
+
+	{
+		u64 abits = (u64)aadlen * 8;
+		u64 cbits = (u64)ctlen  * 8;
+
+		lenbuf[0]  = (u8)(abits >> 56); lenbuf[1]  = (u8)(abits >> 48);
+		lenbuf[2]  = (u8)(abits >> 40); lenbuf[3]  = (u8)(abits >> 32);
+		lenbuf[4]  = (u8)(abits >> 24); lenbuf[5]  = (u8)(abits >> 16);
+		lenbuf[6]  = (u8)(abits >>  8); lenbuf[7]  = (u8)abits;
+		lenbuf[8]  = (u8)(cbits >> 56); lenbuf[9]  = (u8)(cbits >> 48);
+		lenbuf[10] = (u8)(cbits >> 40); lenbuf[11] = (u8)(cbits >> 32);
+		lenbuf[12] = (u8)(cbits >> 24); lenbuf[13] = (u8)(cbits >> 16);
+		lenbuf[14] = (u8)(cbits >>  8); lenbuf[15] = (u8)cbits;
+		for (i = 0; i < 16; i++) ghash[i] ^= lenbuf[i];
+		{
+			u8 z[16]; u8 v[16]; u8 res[16] = {0};
+			int b; u8 carry;
+
+			memcpy(z, ghash, 16);
+			memcpy(v, h, 16);
+			for (i = 0; i < 16; i++) {
+				for (b = 7; b >= 0; b--) {
+					int j;
+
+					if (z[i] & (1u << b))
+						for (j = 0; j < 16; j++) res[j] ^= v[j];
+					carry = v[15] & 1u;
+					for (j = 15; j > 0; j--)
+						v[j] = (v[j] >> 1) | ((v[j-1] & 1u) << 7);
+					v[0] >>= 1;
+					if (carry) v[0] ^= 0xe1u;
+				}
+			}
+			memcpy(ghash, res, 16);
+		}
+	}
+
+	/* tag = GHASH XOR AES_K(J0) */
+	aes128_encrypt_block(&ctx, j0, tag_enc);
+	for (i = 0; i < 16; i++)
+		tag_calc[i] = ghash[i] ^ tag_enc[i];
+
+	/* Compare with supplied tag (ct + ctlen). */
+	{
+		u8 diff = 0;
+
+		for (i = 0; i < 16; i++)
+			diff |= tag_calc[i] ^ ct[ctlen + i];
+		if (diff != 0)
+			return 0;
+	}
+
+	/* CTR decrypt. */
+	memcpy(ctr, j0, 16);
+	{
+		u32 c;
+
+		c = (u32)ctr[12] << 24 | (u32)ctr[13] << 16 | (u32)ctr[14] << 8 | ctr[15];
+		c++;
+		ctr[12] = (u8)(c >> 24); ctr[13] = (u8)(c >> 16);
+		ctr[14] = (u8)(c >>  8); ctr[15] = (u8)c;
+	}
+	for (i = 0; i < ctlen; i++) {
+		if (i % 16 == 0) {
+			aes128_encrypt_block(&ctx, ctr, ks);
+			{
+				u32 c;
+
+				c = (u32)ctr[12] << 24 | (u32)ctr[13] << 16 |
+				    (u32)ctr[14] << 8 | ctr[15];
+				c++;
+				ctr[12] = (u8)(c >> 24); ctr[13] = (u8)(c >> 16);
+				ctr[14] = (u8)(c >>  8); ctr[15] = (u8)c;
+			}
+		}
+		pt[i] = ct[i] ^ ks[i % 16];
+	}
+	return 1;
+}
+
+/* Harness-local decoder: re-derive keys from the DCID in a QUIC Initial
+ * header-protected packet, strip HP, AEAD-open, scan plaintext for sni.
+ * Returns 1 if the SNI is found, 0 on any failure.
+ * TEST-ONLY — lives in qinit_kat.c only.
+ */
+static int qinit_harness_decode_sni(const u8 *pkt, int pktlen, const char *sni)
+{
+	/* Parse Long Header: byte0(1) version(4) dcidLen(1) dcid scidLen(1) scid
+	 *                    tokenLen(1) lengthVarint pn(4)
+	 * Fixed layout for our packets: pnLen=4, dcidLen=8, scidLen=8.
+	 */
+	u8 key[16], iv[12], hp[16];
+	u8 nonce[12];
+	u8 work[1200]; /* mutable copy */
+	const u8 *dcid;
+	int pnOffset;
+	u8 mask[16], sample[16];
+	struct aes128_ctx hp_ctx;
+	u8 pn[4];
+	u8 plain[1154];
+	u32 i;
+	u32 snilen;
+
+	if (pktlen < 30 + 16)
+		return 0;
+
+	memcpy(work, pkt, pktlen);
+	dcid    = work + 6;  /* skip byte0(1)+version(4)+dcidLen(1) */
+
+	/* Re-derive keys from DCID. */
+	qinit_derive_initial_keys(dcid, 8, key, iv, hp);
+
+	/* Compute HP mask from sample = pkt[pnOffset+4..+16].
+	 * pnOffset is at 26 (before HP removal, the PN is at byte 26).
+	 * sample is at pnOffset+4 = 30.
+	 */
+	pnOffset = 26; /* byte offset of PN in packet */
+	memcpy(sample, work + pnOffset + 4, 16);
+	aes128_set_encrypt_key(&hp_ctx, hp);
+	aes128_encrypt_block(&hp_ctx, sample, mask);
+
+	/* Unmask. */
+	work[0] ^= mask[0] & 0x0f;
+	for (i = 0; i < 4; i++)
+		work[pnOffset + i] ^= mask[1 + i];
+
+	/* Extract PN. */
+	for (i = 0; i < 4; i++)
+		pn[i] = work[pnOffset + i];
+
+	/* Build nonce = iv XOR pn (last 4 bytes). */
+	memcpy(nonce, iv, 12);
+	for (i = 0; i < 4; i++)
+		nonce[8 + i] ^= pn[i];
+
+	/* AEAD open: AAD = header (bytes 0..pnOffset+4-1 = bytes 0..29). */
+	if (!aes128_gcm_open(key, nonce, work, 30, work + 30, 1154, plain))
+		return 0;
+
+	/* Scan plain for SNI bytes. */
+	snilen = 0;
+	while (sni[snilen])
+		snilen++;
+
+	for (i = 0; i + snilen <= 1154; i++) {
+		if (memcmp(plain + i, sni, snilen) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static void test_golden_vector(void)
+{
+	u8 stream[84], want[1200], got[1200];
+	struct fixedrand fr;
+
+	if (read_file("testdata/qinit_rand.bin", stream, sizeof(stream)) != 84 ||
+	    read_file("testdata/qinit_vector.bin", want, sizeof(want)) != 1200) {
+		printf("FAIL golden_vector (testdata missing)\n"); fails++; return;
+	}
+	fr.p = stream; fr.n = 84; fr.off = 0;
+	if (qinit_build(got, "example.com", fixedrand_fn, &fr) != 0) {
+		printf("FAIL golden_vector (build err)\n"); fails++; return;
+	}
+	eq("golden_vector", got, want, 1200);
+}
+
+static void test_round_trip(void)
+{
+	u8 stream[84], pkt[1200];
+	struct fixedrand fr;
+
+	if (read_file("testdata/qinit_rand.bin", stream, sizeof(stream)) != 84) {
+		printf("FAIL round_trip (testdata missing)\n"); fails++; return;
+	}
+	fr.p = stream; fr.n = 84; fr.off = 0;
+	qinit_build(pkt, "example.com", fixedrand_fn, &fr);
+	if (qinit_harness_decode_sni(pkt, 1200, "example.com"))
+		printf("PASS round_trip\n");
+	else { printf("FAIL round_trip\n"); fails++; }
+}
+
 /* QUIC variable-length integer encoding (RFC 9000 §16).
  * KAT mirrors the Go TestAppendQUICVarint cases.
  */
@@ -164,6 +512,8 @@ int main(void)
 	test_aes128_gcm();
 	test_derive_initial_keys_rfc9001();
 	test_varint();
+	test_golden_vector();
+	test_round_trip();
 	printf(fails ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", fails);
 	return fails ? 1 : 0;
 }

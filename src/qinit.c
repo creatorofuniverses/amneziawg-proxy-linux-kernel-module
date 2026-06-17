@@ -494,3 +494,126 @@ int qinit_test_put_varint(u8 *out, u64 v)
 	return (int)(qinit_put_varint(out, v) - out);
 }
 #endif
+
+/* qinit_build — build a QINIT_DATAGRAM_LEN-byte QUIC v1 Initial datagram
+ * carrying a TLS 1.3 ClientHello advertising `sni`, into buf.
+ *
+ * Port of buildQUICInitialWithRand (obf_imitate_quic.go).  Fixed datagram
+ * length 1200, pnLen = 4.
+ *
+ * Draw order (load-bearing, matches Go oracle):
+ *   rand(dcid, 8), rand(scid, 8), rand(pn, 4),
+ *   then rand(pub, 32), rand(random, 32) inside qinit_build_client_hello.
+ *
+ * Stack budget for this frame (no heap):
+ *   dcid[8]+scid[8]+pn[4]=20, key[16]+iv[12]+hp[16]=44, nonce[12]=12,
+ *   ch[512]=512 (CH scratch), chlen(4)+cflen(4)=8 — total ~600 B < 2048.
+ *   The called qinit_build_client_hello frame is separate (~1100 B < 2048).
+ */
+int qinit_build(u8 *buf, const char *sni, qinit_rand_fn rand, void *rctx)
+{
+	u8 dcid[8], scid[8], pn[4];
+	u8 key[16], iv[12], hp[16];
+	u8 nonce[12];
+	u8 ch[512];   /* ClientHello handshake message scratch */
+	int chlen, cflen;
+	u8 *p;
+	int pnOffset;
+	u8 sample[16], mask[16];
+	struct aes128_ctx hp_ctx;
+
+	/* Draw order: dcid, scid, pn (then CH draws pub+random internally). */
+	rand(rctx, dcid, 8);
+	rand(rctx, scid, 8);
+	rand(rctx, pn,   4);
+
+	/* Derive client Initial keys from DCID. */
+	qinit_derive_initial_keys(dcid, 8, key, iv, hp);
+
+	/* Build ClientHello handshake message (draws pub+random via rand). */
+	chlen = qinit_build_client_hello(ch, sni, scid, 8, rand, rctx);
+	if (chlen < 0)
+		return -22; /* -EINVAL */
+
+	/*
+	 * Layout (fixed, 1200 bytes):
+	 *   headerLen = 1+4+1+8+1+8+1+2+4 = 30
+	 *   payloadLen = 1200 - 30 - 16 = 1154  (16 = GCM tag)
+	 *   lengthField = pnLen(4) + payloadLen(1154) + 16 = 1174 (varint 0x4496)
+	 */
+	p = buf;
+
+	/* Byte 0: long-header | fixed | Initial(00) | reserved(00) | pnLen-1=3 */
+	*p++ = 0xC3u;
+
+	/* Version: 0x00000001 */
+	*p++ = 0x00u; *p++ = 0x00u; *p++ = 0x00u; *p++ = 0x01u;
+
+	/* DCID: u8 len + dcid */
+	*p++ = 8u;
+	memcpy(p, dcid, 8); p += 8;
+
+	/* SCID: u8 len + scid */
+	*p++ = 8u;
+	memcpy(p, scid, 8); p += 8;
+
+	/* Token: length 0x00 */
+	*p++ = 0x00u;
+
+	/* Length field: varint(1174 = 0x4496) */
+	p = qinit_put_varint(p, 1174u);
+
+	/* Record pnOffset and write PN. */
+	pnOffset = (int)(p - buf); /* = 26 */
+	memcpy(p, pn, 4); p += 4;
+	/* p is now at buf + 30 = headerLen */
+
+	/* Write CRYPTO frame + CH into payload region of buf, then zero-pad.
+	 * cflen = CRYPTO frame header (type+offset+length varints) + chlen.
+	 */
+	{
+		u8 *payload = buf + 30;
+		u8 *fp = payload;
+
+		/* CRYPTO frame: type 0x06, offset 0, length chlen */
+		fp = qinit_put_varint(fp, 0x06u);
+		fp = qinit_put_varint(fp, 0u);
+		fp = qinit_put_varint(fp, (u64)chlen);
+		memcpy(fp, ch, (u32)chlen);
+		fp += chlen;
+		cflen = (int)(fp - payload);
+
+		/* Zero-pad to payloadLen (1154) — trailing 0x00 = PADDING frames. */
+		if (cflen < 1154)
+			memset(payload + cflen, 0, (u32)(1154 - cflen));
+	}
+
+	/* Nonce: iv XOR pn (XOR into the last 4 bytes, indices 8..11). */
+	memcpy(nonce, iv, 12);
+	nonce[8]  ^= pn[0];
+	nonce[9]  ^= pn[1];
+	nonce[10] ^= pn[2];
+	nonce[11] ^= pn[3];
+
+	/* AEAD seal in place: plaintext is buf[30..30+1153], output overwrites it
+	 * and the 16-byte tag lands at buf[30+1154..30+1169].
+	 * AAD = header bytes buf[0..29].
+	 * qinit_aes128_gcm_seal(key, nonce, aad, aadlen, pt, ptlen, out):
+	 *   out must hold ptlen+16 bytes; we pass buf+30 which holds 1154+16=1170.
+	 */
+	qinit_aes128_gcm_seal(key, nonce, buf, 30u, buf + 30, 1154u, buf + 30);
+
+	/* Header protection: sample = buf[pnOffset+4 .. pnOffset+4+15] */
+	memcpy(sample, buf + pnOffset + 4, 16);
+	aes128_set_encrypt_key(&hp_ctx, hp);
+	aes128_encrypt_block(&hp_ctx, sample, mask);
+
+	/* Mask byte0 (low 4 bits) and each PN byte. */
+	buf[0] ^= mask[0] & 0x0fu;
+	buf[pnOffset + 0] ^= mask[1];
+	buf[pnOffset + 1] ^= mask[2];
+	buf[pnOffset + 2] ^= mask[3];
+	buf[pnOffset + 3] ^= mask[4];
+
+	return 0;
+}

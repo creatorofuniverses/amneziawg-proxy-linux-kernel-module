@@ -40,6 +40,11 @@ void qinit_aes128_gcm_seal(const u8 key[16], const u8 nonce[12],
 void qinit_rand_getrandom(void *rctx, u8 *out, int n);
 #endif
 
+/* Build a QINIT_DATAGRAM_LEN-byte QUIC v1 Initial carrying a ClientHello with
+ * `sni` into buf (>= QINIT_DATAGRAM_LEN). Returns 0 or -errno.
+ */
+int qinit_build(u8 *buf, const char *sni, qinit_rand_fn rand, void *rctx);
+
 #ifndef __KERNEL__
 /* Test-only shim: exposes qinit_put_varint for the varint KAT.
  * Returns the number of bytes written to out.
