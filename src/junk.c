@@ -318,6 +318,7 @@ void jp_spec_free(struct jp_spec *spec) {
 
 int jp_spec_setup(struct jp_spec *spec) {
     int err = 0;
+    int i;
     int pkt_size, mods_size;
     struct jp_tag *tag, *tmp;
     struct jp_modifier *mod;
@@ -327,6 +328,8 @@ int jp_spec_setup(struct jp_spec *spec) {
     mutex_lock(&spec->lock);
 
     kfree(spec->pkt);
+    for (i = 0; i < spec->mods_size; i++)
+        kfree(spec->mods[i].ctx);
     kfree(spec->mods);
     spec->pkt = NULL;
     spec->mods = NULL;
