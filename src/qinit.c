@@ -228,7 +228,7 @@ void qinit_hkdf_expand_label(const u8 *secret, const char *label, u8 *out, u16 l
 
 	fl = 6;
 	memcpy(full, "tls13 ", 6);
-	for (i = 0; label[i]; i++)
+	for (i = 0; label[i] && fl < (u32)sizeof(full); i++)
 		full[fl++] = (u8)label[i];
 
 	il = 0;
@@ -467,24 +467,6 @@ qinit_build_client_hello(u8 *out, const char *sni,
 	op += bodylen;
 
 	return (int)(op - out);
-}
-
-/* QUIC CRYPTO frame (RFC 9001 §17.2.2):
- *   varint(0x06) + varint(offset=0) + varint(len) + data
- *
- * Returns bytes written into out.
- */
-static int __maybe_unused
-qinit_build_crypto_frame(u8 *out, const u8 *ch, int chlen)
-{
-	u8 *p = out;
-
-	p = qinit_put_varint(p, 0x06);          /* type  */
-	p = qinit_put_varint(p, 0);             /* offset */
-	p = qinit_put_varint(p, (u64)chlen);    /* length */
-	memcpy(p, ch, (u32)chlen);
-	p += chlen;
-	return (int)(p - out);
 }
 
 /* Test-only shim (userspace / KAT only). */
