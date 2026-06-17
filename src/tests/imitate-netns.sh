@@ -544,17 +544,21 @@ if [[ -n "$QTCPDUMP_PID" ]]; then
 		echo "[*] qinit: Assert 2 — dissect captured decoy with tshark"
 
 		# 2a: the captured traffic must include at least one 1200-byte UDP
-		# datagram from QA to QB (the qinit I-packet).  tshark's frame.len
-		# includes the Ethernet/IP/UDP headers (14+20+8=42 bytes); the UDP
-		# payload is 1200 bytes, so frame.len == 1242.
-		QINIT_FRAME_LEN=1242
+		# datagram from QA to QB (the qinit I-packet).  We check udp.length
+		# (the UDP header length field, which covers the 8-byte UDP header +
+		# payload) rather than frame.len: udp.length == 1208 means the UDP
+		# payload is exactly 1200 bytes.  This is L2-framing-independent —
+		# it holds whether tcpdump captured with an Ethernet II (14-byte)
+		# or Linux cooked SLL (16-byte) link header.
+		QINIT_UDP_LEN=1208
 		QINIT_COUNT="$(tshark -r "$QPCAP" \
-			-Y "ip.src == ${QUNDERLAY_A} && udp.dstport == ${QPORT_B} && frame.len == ${QINIT_FRAME_LEN}" \
+			-d "udp.port==${QPORT_B},quic" \
+			-Y "ip.src == ${QUNDERLAY_A} && quic && udp.length == ${QINIT_UDP_LEN}" \
 			2>/dev/null | wc -l)"
 		if [[ "$QINIT_COUNT" -ge 1 ]]; then
-			echo "[*] qinit: PASS — found ${QINIT_COUNT} frame(s) of ${QINIT_FRAME_LEN} bytes (1200-byte UDP payload)"
+			echo "[*] qinit: PASS — found ${QINIT_COUNT} QUIC frame(s) with udp.length==${QINIT_UDP_LEN} (1200-byte UDP payload)"
 		else
-			echo "ERROR: qinit: expected at least one ${QINIT_FRAME_LEN}-byte frame (1200-byte qinit decoy), found ${QINIT_COUNT}" >&2
+			echo "ERROR: qinit: expected at least one QUIC frame with udp.length==${QINIT_UDP_LEN} (1200-byte qinit decoy), found ${QINIT_COUNT}" >&2
 			exit 1
 		fi
 
