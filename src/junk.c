@@ -2,6 +2,7 @@
 #include "imitate.h"
 #include "messages.h"
 #include "peer.h"
+#include "qinit.h"
 
 #include <linux/list.h>
 #include <linux/slab.h>
@@ -226,6 +227,44 @@ static int parse_imitate_tag(char *val, struct list_head *head, jp_modifier_func
 	return 0;
 }
 
+static void qinit_modifier(char *buf, int len, struct wg_peer *peer, void *ctx)
+{
+    (void)len;
+    (void)peer;
+    qinit_build((u8 *)buf, (const char *)ctx, qinit_rand_getrandom, NULL);
+}
+
+static int parse_qinit_tag(char *val, struct list_head *head)
+{
+    struct jp_tag *tag;
+    int len;
+
+    if (!val)
+        return -EINVAL;
+    while (*val == ' ')           /* trim leading spaces, mirrors Go TrimSpace */
+        val++;
+    len = strlen(val);
+    while (len > 0 && val[len - 1] == ' ')
+        val[--len] = '\0';
+    if (len == 0 || len > 255)    /* non-empty SNI, <= 255 bytes */
+        return -EINVAL;
+
+    tag = kzalloc(sizeof(*tag), GFP_KERNEL);
+    if (!tag)
+        return -ENOMEM;
+
+    tag->ctx = kstrdup(val, GFP_KERNEL);
+    if (!tag->ctx) {
+        kfree(tag);
+        return -ENOMEM;
+    }
+    tag->pkt_size = QINIT_DATAGRAM_LEN;
+    tag->func = qinit_modifier;
+
+    list_add(&tag->head, head);
+    return 0;
+}
+
 int jp_parse_tags(char* str, struct list_head* head) {
     int err = 0;
     char* key;
@@ -287,6 +326,11 @@ int jp_parse_tags(char* str, struct list_head* head) {
         }
         else if (!strcmp(key, "sip")) {
             err = parse_imitate_tag(val, head, imitate_sip_modifier);
+            if (err)
+                return err;
+        }
+        else if (!strcmp(key, "qinit")) {
+            err = parse_qinit_tag(val, head);
             if (err)
                 return err;
         }
@@ -354,11 +398,21 @@ int jp_spec_setup(struct jp_spec *spec) {
     pkt_size = 0;
     mods_size = 0;
 
-    list_for_each_entry(tag, &head, head) {
-        pkt_size += tag->pkt_size;
+    {
+        int ntags = 0, nqinit = 0;
 
-        if (tag->func)
-            ++mods_size;
+        list_for_each_entry(tag, &head, head) {
+            pkt_size += tag->pkt_size;
+            if (tag->func)
+                ++mods_size;
+            ++ntags;
+            if (tag->func == qinit_modifier)
+                ++nqinit;
+        }
+        if (nqinit && ntags != 1) {   /* qinit must be the sole tag in its ispec */
+            err = -EINVAL;
+            goto error;
+        }
     }
 
     if (pkt_size > MESSAGE_MAX_SIZE) {

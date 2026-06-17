@@ -617,3 +617,11 @@ int qinit_build(u8 *buf, const char *sni, qinit_rand_fn rand, void *rctx)
 
 	return 0;
 }
+
+#ifdef __KERNEL__
+void qinit_rand_getrandom(void *rctx, u8 *out, int n)
+{
+	(void)rctx;
+	get_random_bytes(out, n);
+}
+#endif
