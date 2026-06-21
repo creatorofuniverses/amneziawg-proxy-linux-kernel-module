@@ -267,6 +267,7 @@ static int parse_qinit_tag(char *val, struct list_head *head)
 
 int jp_parse_tags(char* str, struct list_head* head) {
     int err = 0;
+    int trimmed_len;
     char* key;
     char* val;
 
@@ -276,6 +277,16 @@ int jp_parse_tags(char* str, struct list_head* head) {
         val = strsep(&str, ">");
         if (!val)
             break;
+
+        /* Trim whitespace surrounding the tag so "< b 0xf6 >" is accepted
+         * like "<b 0xf6>"; without this a leading space leaves an empty key
+         * and the whole spec is rejected with -EINVAL. Mirrors the Go
+         * reference's per-tag strings.TrimSpace(). */
+        while (*val == ' ')
+            ++val;
+        trimmed_len = strlen(val);
+        while (trimmed_len > 0 && val[trimmed_len - 1] == ' ')
+            val[--trimmed_len] = '\0';
 
         key = strsep(&val, " ");
 
