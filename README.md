@@ -140,6 +140,48 @@ and link resulting tree to `kernel` symlink:
     sudo dkms install -m amneziawg -v 1.0.0
     ```
 
+    `sudo make dkms-install` copies the module sources to `/usr/src/amneziawg-1.0.0`, which is what the
+    subsequent `dkms add` expects — run it as root, and if `dkms add` reports *"module source directory does
+    not exist"* it means this step did not complete.
+
+### DKMS vs. plain install — which to choose?
+
+- **Plain `make install`** builds the module once against your *current* kernel and copies it into
+  `/lib/modules/$(uname -r)`. It is simple, but the module is tied to that one kernel: after a kernel
+  upgrade the module is gone and you must rebuild and reinstall it manually.
+- **DKMS** registers the *sources* and rebuilds the module **automatically every time the kernel is
+  updated**, so the tunnel keeps working across upgrades. It costs a little more setup and requires a
+  toolchain to stay installed on the machine. Prefer DKMS on long-lived servers and desktops you keep
+  updated; plain install is fine for one-off or throwaway builds.
+
+### Verifying the installation
+
+After either method, confirm the module is present and loadable:
+
+```shell
+# 1. The module is registered with the kernel (a path is printed):
+modinfo amneziawg | head -n 5
+
+# 2. Load it (no output means success):
+sudo modprobe amneziawg
+
+# 3. It is now loaded:
+lsmod | grep amneziawg
+
+# 4. For DKMS, check the build status shows "installed" for your kernel:
+dkms status amneziawg
+```
+
+You can also create a test interface to confirm the userspace tooling sees it:
+
+```shell
+sudo ip link add dev awg0 type amneziawg && ip link show awg0 && sudo ip link del awg0
+```
+
+If `modprobe` fails with *"version magic"* or *"disagrees about version of symbol"*, the module was built
+against a different kernel than the one running — rebuild against the correct kernel tree (see step 2 and
+[Building locally and deploying to a server](BUILDING-LOCALLY.md)).
+
 ## Configuration
 
 > [!IMPORTANT]
