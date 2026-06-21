@@ -14,11 +14,11 @@
 
 ## Table of contents
 
-- [Installation](#installation)
-  - [Ubuntu](#ubuntu)
-  - [Debian](#debian)
-  - [Linux Mint](#linux-mint)
-  - [RHEL/CentOS/SUSE/Fedora Core](#rhelcentossusefedora-core)
+- [Installation](#installation) (package repos — ~~struck through, see note~~)
+  - [~~Ubuntu~~](#ubuntu)
+  - [~~Debian~~](#debian)
+  - [~~Linux Mint~~](#linux-mint)
+  - [~~RHEL/CentOS/SUSE/Fedora Core~~](#rhelcentossusefedora-core)
 - [Manual build](#manual-build)
 - [Configuration](#configuration)
 - [Traffic imitation](#traffic-imitation)
@@ -27,27 +27,32 @@
 
 ## Installation
 
-### Ubuntu
+> [!WARNING]
+> The package-repository installs below (PPA / COPR) deliver **upstream AmneziaWG**, not this
+> `-proxy` fork, so they will **not** install the traffic-imitation features. They are struck
+> through and kept for reference only. **For now, use [Manual build](#manual-build).**
 
-Open `Terminal` and proceed with following instructions:
+### ~~Ubuntu~~
 
-1. (Optionally) Upgrade your system to latest packages including latest available kernel by running `apt-get full-upgrade`.
-After kernel upgrade reboot is required.
-2. Ensure that you have source repositories configured for APT - run `vi /etc/apt/sources.list` and make sure that there is
-at least one line starting with `deb-src` is present and uncommented.
-3. Install pre-requisites - run `sudo apt install -y software-properties-common python3-launchpadlib gnupg2 linux-headers-$(uname -r)`.
-4. Run `sudo add-apt-repository ppa:amnezia/ppa`.
-5. Finally execute `sudo apt-get install -y amneziawg`.
+~~Open `Terminal` and proceed with following instructions:~~
 
-### Debian
+1. ~~(Optionally) Upgrade your system to latest packages including latest available kernel by running `apt-get full-upgrade`.
+After kernel upgrade reboot is required.~~
+2. ~~Ensure that you have source repositories configured for APT - run `vi /etc/apt/sources.list` and make sure that there is
+at least one line starting with `deb-src` is present and uncommented.~~
+3. ~~Install pre-requisites - run `sudo apt install -y software-properties-common python3-launchpadlib gnupg2 linux-headers-$(uname -r)`.~~
+4. ~~Run `sudo add-apt-repository ppa:amnezia/ppa`.~~
+5. ~~Finally execute `sudo apt-get install -y amneziawg`.~~
 
-Open `Terminal` and do next steps:
+### ~~Debian~~
 
-1. (Optionally) Upgrade your system to latest packages including latest available kernel by running `apt-get full-upgrade`.
-   After kernel upgrade reboot is required.
-2. Ensure that you have source repositories configured for APT - run `vi /etc/apt/sources.list` and make sure that there is
-   at least one line starting with `deb-src` is present and uncommented.
-3. Execute following commands:
+~~Open `Terminal` and do next steps:~~
+
+1. ~~(Optionally) Upgrade your system to latest packages including latest available kernel by running `apt-get full-upgrade`.
+   After kernel upgrade reboot is required.~~
+2. ~~Ensure that you have source repositories configured for APT - run `vi /etc/apt/sources.list` and make sure that there is
+   at least one line starting with `deb-src` is present and uncommented.~~
+3. ~~Execute following commands:~~
 ```shell
 sudo apt install -y software-properties-common python3-launchpadlib gnupg2 linux-headers-$(uname -r)
 sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 57290828
@@ -57,35 +62,40 @@ sudo apt-get update
 sudo apt-get install -y amneziawg
 ```
 
-### Linux Mint
+### ~~Linux Mint~~
 
-Open `Software Sources` and make sure that `Source code repositories` (under `Optional Sources`) are enabled.
+~~Open `Software Sources` and make sure that `Source code repositories` (under `Optional Sources`) are enabled.~~
 
-Proceed to `PPAs` section and add `ppa:amnezia/ppa` PPA repository, after that save configuration and rebuild `apt` cache.
+~~Proceed to `PPAs` section and add `ppa:amnezia/ppa` PPA repository, after that save configuration and rebuild `apt` cache.~~
 
-After that, open `Terminal` and run:
+~~After that, open `Terminal` and run:~~
 
 ```shell
 sudo apt-get install -y amneziawg
 ```
 
-### RHEL/CentOS/SUSE/Fedora Core
+### ~~RHEL/CentOS/SUSE/Fedora Core~~
 
-*If you use release that doesn't have DKMS support out of the box, you may need to install [EPEL](https://docs.fedoraproject.org/en-US/epel/#_quickstart) first.*
+~~*If you use release that doesn't have DKMS support out of the box, you may need to install [EPEL](https://docs.fedoraproject.org/en-US/epel/#_quickstart) first.*~~
 
-Open `Terminal` and run:
+~~Open `Terminal` and run:~~
 
 ```shell
 sudo dnf copr enable amneziavpn/amneziawg
 sudo dnf install amneziawg-dkms amneziawg-tools
 ```
 
-Before installation it is strictly recommended to upgrade your system kernel to the latest available version and perform
-the reboot afterwards.
+~~Before installation it is strictly recommended to upgrade your system kernel to the latest available version and perform
+the reboot afterwards.~~
 
 ## Manual build
 
 You may need to install kernel headers and/or build essentials packages before running following steps.
+
+> [!TIP]
+> Building on the target machine requires a full toolchain and kernel source tree there, which is slow.
+> To make it quicker you can **cross-build on your workstation** and copy only the resulting `amneziawg.ko`
+> to the server — see [Building locally and deploying to a server](BUILDING-LOCALLY.md).
 
 1. In Terminal:
     ```shell
