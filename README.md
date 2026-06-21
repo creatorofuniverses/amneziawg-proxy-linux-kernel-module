@@ -102,6 +102,20 @@ and link resulting tree to `kernel` symlink:
     
     Please note to find and provide full kernel sourcetree, not only headers. **If you run on legacy kernel (<5.6), you do not need to perform this step.**
 
+    Where to get the source (pick whichever matches your running kernel — check it with `uname -r`):
+
+    - **Your distribution** ships a matching source package, which is usually the safest choice because it includes the distro's patches:
+        - Debian/Ubuntu: `sudo apt install linux-source` (unpacks to `/usr/src/linux-source-*.tar.*`).
+        - Fedora/RHEL: `sudo dnf install kernel-devel` for the prepared build tree under `/usr/src/kernels/$(uname -r)`.
+        - Arch: the `linux-headers` package provides a build tree at `/usr/lib/modules/$(uname -r)/build`.
+    - **kernel.org** hosts the upstream (vanilla) tarballs. This one-liner downloads, unpacks, and links the source that matches your running kernel version:
+        ```shell
+        VER=$(uname -r | grep -oE '^[0-9]+\.[0-9]+(\.[0-9]+)?'); \
+        curl -O "https://cdn.kernel.org/pub/linux/kernel/v${VER%%.*}.x/linux-${VER}.tar.xz" && \
+        tar xf "linux-${VER}.tar.xz" && ln -sf "$PWD/linux-${VER}" kernel
+        ```
+        Note that a vanilla tree may not exactly match a heavily patched distro kernel; prefer your distribution's source package if the build complains about a version mismatch.
+
 3. Now perform build and installation:
     ```shell
     make
